@@ -28,14 +28,14 @@ export interface VhdlDiagnosticsConfig {
 }
 
 export interface VhdlConfig {
-  languageStandard: "1987" | "1993" | "2002" | "2008";
+  languageStandard: "87" | "93" | "02" | "08" | "19";
   diagnostics: VhdlDiagnosticsConfig;
   ghdl: VhdlGhdlConfig;
   workspace: VhdlWorkspaceConfig;
 }
 
 export const defaultConfig: VhdlConfig = {
-  languageStandard: "2008",
+  languageStandard: "08",
   diagnostics: { mode: "both" },
   ghdl: {
     path: "",
@@ -157,8 +157,24 @@ export function runGhdl(
     stdio: ["pipe", "pipe", "pipe"],
   });
 
+  console.error(`[vhdl-ls] ghdlBin=${ghdlBin}`);
+  console.error(`[vhdl-ls] args=${JSON.stringify(args)}`);
+  console.error(`[vhdl-ls] status=${result.status} signal=${result.signal} error=${result.error ? String(result.error) : ''}`);
+  console.error(`[vhdl-ls] stdoutLen=${(result.stdout ?? '').length} stderrLen=${(result.stderr ?? '').length}`);
+
+  if (result.error) {
+    throw result.error;
+  }
+
   const output = (result.stdout || "") + (result.stderr || "");
   const entries = parseGhdlOutput(output);
+
+  console.error(`[vhdl-ls] parsedEntries=${entries.length}`);
+
+  if (entries.length === 0 && output.trim().length > 0) {
+    const sample = output.split(/\r?\n/).slice(0, 5).join('\n');
+    console.error(`[vhdl-ls] parse produced 0 entries; first lines:\n${sample}`);
+  }
 
   const byUri = new Map<string, GhdlDiagnosticEntry[]>();
   for (const entry of entries) {

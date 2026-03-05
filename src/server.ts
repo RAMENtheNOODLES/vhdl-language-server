@@ -4,6 +4,8 @@
  * Implements the Language Server Protocol (LSP) for VHDL with optional GHDL integration.
  */
 
+console.log = () => {};
+
 import {
   createConnection,
   TextDocuments,
@@ -42,7 +44,18 @@ import {
 // LSP server setup
 // ---------------------------------------------------------------------------
 
+let initParams: InitializeParams|undefined;
+
 const connection = createConnection(ProposedFeatures.all);
+
+process.on('uncaughtException', (err) => {
+  connection.console.error(`[fatal] uncaughtException: ${err?.stack ?? String(err)}`);
+});
+
+process.on('unhandledRejection', (reason) => {
+  connection.console.error(`[fatal] unhandledRejection: ${String(reason)}`);
+});
+
 const documents = new TextDocuments(TextDocument);
 
 let vhdlConfig: VhdlConfig = { ...defaultConfig };
@@ -85,38 +98,29 @@ function basicDiagnostics(_uri: string, document: TextDocument): Diagnostic[] {
   return diagnostics;
 }
 
-function ghdlDiagnosticsFor(
-  uri: string,
-  fsPath: string
-): Map<string, Diagnostic[]> {
+function ghdlDiagnosticsFor(uri: string, fsPath: string): Map<string, Diagnostic[]> {
   const byUri = new Map<string, Diagnostic[]>();
 
-  const entries = runGhdl(fsPath, vhdlConfig);
-
-  for (const [entryUri, entryList] of entries) {
-    const diags: Diagnostic[] = entryList.map((e) => ({
-      range: {
-        start: {
-          line: Math.max(0, e.line - 1),
-          character: Math.max(0, e.column - 1),
+  try {
+    const entries = runGhdl(fsPath, vhdlConfig);
+    for (const [entryUri, entryList] of entries) {
+      const diags: Diagnostic[] = entryList.map((e) => ({
+        range: {
+          start: { line: Math.max(0, e.line - 1), character: Math.max(0, e.column - 1) },
+          end: { line: Math.max(0, e.line - 1), character: Math.max(0, e.column) },
         },
-        end: {
-          line: Math.max(0, e.line - 1),
-          character: Math.max(0, e.column),
-        },
-      },
-      severity: e.severity,
-      source: "ghdl",
-      message: e.message,
-    }));
-    byUri.set(entryUri, diags);
-  }
-
-  // Ensure the primary file always appears in the map (even if no errors)
-  if (!byUri.has(uri)) {
+        severity: e.severity,
+        source: 'ghdl',
+        message: e.message,
+      }));
+      byUri.set(entryUri, diags);
+    }
+  } catch (e) {
+    console.error(`runGhdl failed: ${String(e)}`);
     byUri.set(uri, []);
   }
 
+  if (!byUri.has(uri)) byUri.set(uri, []);
   return byUri;
 }
 
@@ -144,7 +148,10 @@ function publishDiagnostics(uri: string, fsPath: string): void {
     }
   }
 
+  connection.console.log(`publishDiagnostics: ${uri} mode=${vhdlConfig.diagnostics.mode}`);
+
   for (const [u, diags] of combined) {
+    connection.console.log(`sendDiagnostics: uri=${u} count=${diags.length}`);
     connection.sendDiagnostics({ uri: u, diagnostics: diags });
   }
 }
@@ -172,6 +179,8 @@ async function loadConfiguration(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 connection.onInitialize((_params: InitializeParams): InitializeResult => {
+  initParams = _params;
+  connection.console.log(`initialize: rootUri=${_params.rootUri ?? ''}`);
   return {
     capabilities: {
       textDocumentSync: TextDocumentSyncKind.Incremental,
@@ -186,18 +195,43 @@ connection.onInitialize((_params: InitializeParams): InitializeResult => {
     },
     serverInfo: {
       name: "vhdl-language-server",
-      version: "0.1.0",
+      version: "0.2.0",
     },
   };
 });
 
 connection.onInitialized(async () => {
-  await loadConfiguration();
+  connection.console.log('initialized');
 
-  // Watch for configuration changes
-  await connection.client.register(DidChangeConfigurationNotification.type, {
-    section: "vhdl",
-  });
+  try {
+    connection.console.log('onInitialized: before loadConfiguration');
+    await loadConfiguration();
+    connection.console.log('onInitialized: after loadConfiguration');
+  } catch (e) {
+    connection.console.error(`onInitialized: loadConfiguration failed: ${String(e)}`);
+  }
+
+  try {
+    const caps = initParams?.capabilities;
+    const supportsDidChangeConfig =
+      !!caps?.workspace?.didChangeConfiguration?.dynamicRegistration;
+
+    connection.console.log(
+      `onInitialized: supports didChangeConfiguration dynamicRegistration = ${supportsDidChangeConfig}`
+    );
+
+    if (supportsDidChangeConfig) {
+      connection.console.log('onInitialized: before client.register(didChangeConfiguration)');
+      await connection.client.register(DidChangeConfigurationNotification.type, {
+        section: 'vhdl',
+      });
+      connection.console.log('onInitialized: after client.register(didChangeConfiguration)');
+    }
+  } catch (e) {
+    connection.console.error(`onInitialized: client.register failed: ${String(e)}`);
+  }
+
+  connection.console.log('onInitialized: done');
 });
 
 connection.onDidChangeConfiguration(async () => {
@@ -217,12 +251,14 @@ connection.onDidChangeConfiguration(async () => {
 documents.onDidOpen((event: TextDocumentChangeEvent<TextDocument>) => {
   const { uri } = event.document;
   const fsPath = URI.parse(uri).fsPath;
+  connection.console.log(`didOpen: ${event.document.uri}`);
   publishDiagnostics(uri, fsPath);
 });
 
 documents.onDidSave((event: TextDocumentChangeEvent<TextDocument>) => {
   const uri = event.document.uri;
   const fsPath = URI.parse(uri).fsPath;
+  connection.console.log(`didChange: ${event.document.uri}`);
   publishDiagnostics(uri, fsPath);
 });
 
