@@ -157,6 +157,10 @@ export function runGhdl(
     stdio: ["pipe", "pipe", "pipe"],
   });
 
+  if (result.error) {
+    throw result.error;
+  }
+
   const output = (result.stdout || "") + (result.stderr || "");
   const entries = parseGhdlOutput(output);
 
