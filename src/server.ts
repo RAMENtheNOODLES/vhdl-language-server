@@ -116,7 +116,7 @@ function ghdlDiagnosticsFor(uri: string, fsPath: string): Map<string, Diagnostic
       byUri.set(entryUri, diags);
     }
   } catch (e) {
-    connection.console.error(`runGhdl failed: ${String(e)}`);
+    console.error(`runGhdl failed: ${String(e)}`);
     byUri.set(uri, []);
   }
 
@@ -151,6 +151,7 @@ function publishDiagnostics(uri: string, fsPath: string): void {
   connection.console.log(`publishDiagnostics: ${uri} mode=${vhdlConfig.diagnostics.mode}`);
 
   for (const [u, diags] of combined) {
+    connection.console.log(`sendDiagnostics: uri=${u} count=${diags.length}`);
     connection.sendDiagnostics({ uri: u, diagnostics: diags });
   }
 }
