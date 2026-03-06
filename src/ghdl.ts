@@ -19,8 +19,14 @@ export interface VhdlGhdlConfig {
   debounceMs: number;
 }
 
+export interface VhdlWorkspaceIndexingConfig {
+  enabled: boolean;
+  rescanIntervalMs: number;
+}
+
 export interface VhdlWorkspaceConfig {
   sourceGlobs: string[];
+  indexing: VhdlWorkspaceIndexingConfig;
 }
 
 export interface VhdlDiagnosticsConfig {
@@ -45,6 +51,10 @@ export const defaultConfig: VhdlConfig = {
   },
   workspace: {
     sourceGlobs: ["**/*.vhd", "**/*.vhdl", "**/*.vho", "**/*.vht"],
+    indexing: {
+      enabled: true,
+      rescanIntervalMs: 30000,
+    },
   },
 };
 
@@ -214,6 +224,12 @@ export function mergeConfig(
     },
     workspace: {
       sourceGlobs: override.workspace?.sourceGlobs ?? base.workspace.sourceGlobs,
+      indexing: {
+        enabled: override.workspace?.indexing?.enabled ?? base.workspace.indexing.enabled,
+        rescanIntervalMs:
+          override.workspace?.indexing?.rescanIntervalMs ??
+          base.workspace.indexing.rescanIntervalMs,
+      },
     },
   };
 }
