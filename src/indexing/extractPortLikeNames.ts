@@ -11,6 +11,11 @@ export interface NameHit {
     startOffset: number;
     endOffset: number;
     range: Range;
+    detail: string;
+}
+
+function normalizeWhitespace(value: string): string {
+    return value.replace(/\s+/g, " ").trim();
 }
 
 export function extractPortOrGenericNames(
@@ -38,6 +43,7 @@ export function extractPortOrGenericNames(
         const colon = clause.indexOf(":");
         if (colon >= 0) {
             const namesPart = clause.slice(0, colon);
+            const detail = normalizeWhitespace(clause.slice(colon + 1));
             const rawNames = namesPart.split(",").map(s => s.trim()).filter(Boolean);
 
             // compute absolute start of this clause
@@ -54,7 +60,13 @@ export function extractPortOrGenericNames(
 
                 const startOffset = clauseAbsStart + rel;
                 const endOffset = startOffset + nm.length;
-                hits.push({ name: nm, startOffset, endOffset, range: rangeFromOffsets(doc, startOffset, endOffset) });
+                hits.push({
+                    name: nm,
+                    startOffset,
+                    endOffset,
+                    range: rangeFromOffsets(doc, startOffset, endOffset),
+                    detail,
+                });
 
                 searchFrom = rel + nm.length;
             }

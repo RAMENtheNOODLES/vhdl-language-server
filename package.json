@@ -1,6 +1,6 @@
 {
   "name": "vhdl-language-server",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "TypeScript-based VHDL Language Server (LSP) with optional GHDL integration",
   "main": "dist/server.js",
   "bin": {
