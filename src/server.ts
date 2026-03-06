@@ -6,6 +6,8 @@
 
 console.log = () => {};
 
+import { readFileSync } from "fs";
+
 import {
   createConnection,
   TextDocuments,
@@ -37,6 +39,7 @@ import {
   mergeConfig,
   debounce,
   runGhdl,
+  inferDiagnosticCharacterRange,
   VHDL_KEYWORDS,
 } from "./ghdl";
 import {
@@ -44,6 +47,10 @@ import {
   determineContext,
   pickBest,
 } from "./workspaceIndexer";
+import {
+  formatHoverMarkdown,
+  resolveHoverEntry,
+} from "./hoverResolver";
 import type { DesignUnitEntry } from "./indexing/indexTextSignature";
 
 // ---------------------------------------------------------------------------
@@ -107,21 +114,58 @@ function basicDiagnostics(_uri: string, document: TextDocument): Diagnostic[] {
   return diagnostics;
 }
 
+function getDiagnosticLines(
+  uri: string,
+  cache: Map<string, string[] | null>
+): string[] | undefined {
+  if (!cache.has(uri)) {
+    const openDocument = documents.get(uri);
+    if (openDocument) {
+      cache.set(uri, openDocument.getText().split(/\r?\n/));
+    } else {
+      try {
+        const fsPath = URI.parse(uri).fsPath;
+        cache.set(uri, readFileSync(fsPath, "utf8").split(/\r?\n/));
+      } catch {
+        cache.set(uri, null);
+      }
+    }
+  }
+
+  return cache.get(uri) ?? undefined;
+}
+
 function ghdlDiagnosticsFor(uri: string, fsPath: string): Map<string, Diagnostic[]> {
   const byUri = new Map<string, Diagnostic[]>();
+  const lineCache = new Map<string, string[] | null>();
 
   try {
     const entries = runGhdl(fsPath, vhdlConfig);
     for (const [entryUri, entryList] of entries) {
-      const diags: Diagnostic[] = entryList.map((e) => ({
-        range: {
-          start: { line: Math.max(0, e.line - 1), character: Math.max(0, e.column - 1) },
-          end: { line: Math.max(0, e.line - 1), character: Math.max(0, e.column) },
-        },
-        severity: e.severity,
-        source: 'ghdl',
-        message: e.message,
-      }));
+      const lineText = getDiagnosticLines(entryUri, lineCache);
+      const diags: Diagnostic[] = entryList.map((e) => {
+        const range = inferDiagnosticCharacterRange(
+          lineText?.[Math.max(0, e.line - 1)],
+          e.column,
+          e.message
+        );
+
+        return {
+          range: {
+            start: {
+              line: Math.max(0, e.line - 1),
+              character: range.startCharacter,
+            },
+            end: {
+              line: Math.max(0, e.line - 1),
+              character: range.endCharacter,
+            },
+          },
+          severity: e.severity,
+          source: 'ghdl',
+          message: e.message,
+        };
+      });
       byUri.set(entryUri, diags);
     }
   } catch (e) {
@@ -205,7 +249,7 @@ connection.onInitialize((_params: InitializeParams): InitializeResult => {
     },
     serverInfo: {
       name: "vhdl-language-server",
-      version: "0.2.0",
+      version: "0.3.0",
     },
   };
 });
@@ -327,6 +371,28 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
       },
     };
   }
+
+  const hoverEntry = resolveHoverEntry(
+    text,
+    wordRange.start,
+    wordRange.end,
+    params.textDocument.uri,
+    indexer
+  );
+  if (!hoverEntry) {
+    return null;
+  }
+
+  return {
+    contents: {
+      kind: MarkupKind.Markdown,
+      value: formatHoverMarkdown(hoverEntry),
+    },
+    range: {
+      start: document.positionAt(wordRange.start),
+      end: document.positionAt(wordRange.end),
+    },
+  };
 
   return null;
 });

@@ -15,6 +15,7 @@ export interface PortGenericEntry {
     startOffset: number;
     endOffset: number;
     range: Range;
+    signature: string;
 }
 
 export interface DesignUnitEntry {
@@ -27,6 +28,7 @@ export interface DesignUnitEntry {
     /** Offset of the identifier name token (end exclusive) */
     nameEndOffset: number;
     nameRange: Range;
+    signature: string;
     /** Offset of the opening keyword (entity/component) */
     blockStartOffset: number;
     /** Offset of the end of the closing statement */
@@ -43,6 +45,7 @@ export interface LocalDecl {
     startOffset: number;
     endOffset: number;
     range: Range;
+    signature: string;
 }
 
 export interface IndexResult {
@@ -103,7 +106,71 @@ function extractPortLike(
         startOffset: h.startOffset,
         endOffset: h.endOffset,
         range: h.range,
+        signature: buildObjectSignature(keyword, h.name, h.detail),
     }));
+}
+
+function normalizeWhitespace(value: string): string {
+    return value.replace(/\s+/g, " ").trim();
+}
+
+function buildObjectSignature(
+    kind: PortGenericEntry["kind"] | LocalDecl["kind"],
+    name: string,
+    detail: string
+): string {
+    const normalizedDetail = normalizeWhitespace(detail);
+    if (normalizedDetail.length === 0) {
+        return `${kind} ${name}`;
+    }
+    return `${kind} ${name} : ${normalizedDetail}`;
+}
+
+function extractLocalDecls(doc: TextDocument, text: string): LocalDecl[] {
+    const locals: LocalDecl[] = [];
+    const declRe = /\b(signal|variable|constant)\s+([\s\S]*?)\s*:\s*([\s\S]*?);/gim;
+
+    let m: RegExpExecArray | null;
+    while ((m = declRe.exec(text)) !== null) {
+        const kind = m[1].toLowerCase() as LocalDecl["kind"];
+        const namesPart = m[2];
+        const detail = normalizeWhitespace(m[3]);
+        const rawNames = namesPart
+            .split(",")
+            .map((name) => name.trim())
+            .filter(Boolean);
+
+        const fullMatch = m[0];
+        const namesPartStart = fullMatch.indexOf(namesPart);
+        if (namesPartStart < 0) continue;
+
+        const namesPartLower = namesPart.toLowerCase();
+        const namesAbsStart = m.index + namesPartStart;
+        let searchFrom = 0;
+
+        for (const name of rawNames) {
+            if (!/^[a-zA-Z_]\w*$/.test(name)) continue;
+
+            const rel = namesPartLower.indexOf(name.toLowerCase(), searchFrom);
+            if (rel < 0) continue;
+
+            const startOffset = namesAbsStart + rel;
+            const endOffset = startOffset + name.length;
+            locals.push({
+                name,
+                nameLower: name.toLowerCase(),
+                kind,
+                startOffset,
+                endOffset,
+                range: rangeFromOffsets(doc, startOffset, endOffset),
+                signature: buildObjectSignature(kind, name, detail),
+            });
+
+            searchFrom = rel + name.length;
+        }
+    }
+
+    return locals;
 }
 
 // ---------------------------------------------------------------------------
@@ -132,6 +199,7 @@ export function indexText(doc: TextDocument): IndexResult {
             nameStartOffset: h.startOffset,
             nameEndOffset: h.endOffset,
             nameRange: h.range,
+            signature: `entity ${h.name}`,
             blockStartOffset,
             blockEndOffset: blockEnd,
             blockRange: rangeFromOffsets(doc, blockStartOffset, blockEnd),
@@ -157,6 +225,7 @@ export function indexText(doc: TextDocument): IndexResult {
             nameStartOffset: h.startOffset,
             nameEndOffset: h.endOffset,
             nameRange: h.range,
+            signature: `component ${h.name}`,
             blockStartOffset,
             blockEndOffset: blockEnd,
             blockRange: rangeFromOffsets(doc, blockStartOffset, blockEnd),
@@ -166,30 +235,7 @@ export function indexText(doc: TextDocument): IndexResult {
     });
 
     // --- local declarations ---
-    const localPatterns: Array<{ re: RegExp; kind: LocalDecl["kind"] }> = [
-        { re: /\bsignal\s+(\w+)\b/gim, kind: "signal" },
-        { re: /\bvariable\s+(\w+)\b/gim, kind: "variable" },
-        { re: /\bconstant\s+(\w+)\b/gim, kind: "constant" },
-    ];
-    const locals: LocalDecl[] = [];
-    for (const { re, kind } of localPatterns) {
-        re.lastIndex = 0;
-        let m: RegExpExecArray | null;
-        while ((m = re.exec(text)) !== null) {
-            const name = m[1];
-            // m[0] ends with the captured name, so startOffset = m.index + m[0].length - name.length
-            const startOffset = m.index + m[0].length - name.length;
-            const endOffset = startOffset + name.length;
-            locals.push({
-                name,
-                nameLower: name.toLowerCase(),
-                kind,
-                startOffset,
-                endOffset,
-                range: rangeFromOffsets(doc, startOffset, endOffset),
-            });
-        }
-    }
+    const locals = extractLocalDecls(doc, text);
 
     return { entities, components, locals };
 }

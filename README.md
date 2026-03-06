@@ -5,7 +5,7 @@ A TypeScript-based [Language Server Protocol (LSP)](https://microsoft.github.io/
 ## Features
 
 - **Keyword completion** – all VHDL-2008 reserved words.
-- **Hover** – identifies VHDL keywords under the cursor.
+- **Hover** – shows keyword help and declaration signatures for entities, components, ports, generics, signals, variables, and constants.
 - **Diagnostics** – optional GHDL-powered analysis or a lightweight built-in checker.
 - **Go to Definition** – workspace-wide Ctrl+Click navigation:
   - Clicking an instantiation target navigates to the component declaration.

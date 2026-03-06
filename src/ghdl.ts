@@ -73,6 +73,236 @@ export interface GhdlDiagnosticEntry {
   severity: DiagnosticSeverity;
 }
 
+export interface DiagnosticCharacterRange {
+  startCharacter: number;
+  endCharacter: number;
+}
+
+function isWordCharacter(char: string): boolean {
+  return /[A-Za-z0-9_]/.test(char);
+}
+
+function isWhitespace(char: string): boolean {
+  return /\s/.test(char);
+}
+
+function isPunctuationCharacter(char: string): boolean {
+  return char.length > 0 && !isWhitespace(char) && !isWordCharacter(char);
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+function findDiagnosticAnchor(lineText: string, column: number): number {
+  if (lineText.length === 0) {
+    return 0;
+  }
+
+  let anchor = clamp(column - 1, 0, lineText.length - 1);
+  if (!isWhitespace(lineText[anchor])) {
+    return anchor;
+  }
+
+  let right = anchor;
+  while (right < lineText.length && isWhitespace(lineText[right])) {
+    right++;
+  }
+  if (right < lineText.length) {
+    return right;
+  }
+
+  let left = anchor;
+  while (left > 0 && isWhitespace(lineText[left])) {
+    left--;
+  }
+  return left;
+}
+
+function extractDiagnosticMessageCandidates(message: string): string[] {
+  const candidates: string[] = [];
+  const seen = new Set<string>();
+  const patterns = [
+    /"([^"\r\n]+)"/g,
+    /'([^'\r\n]+)'/g,
+    /`([^`\r\n]+)`/g,
+  ];
+
+  const addCandidate = (candidate: string): void => {
+    const trimmed = candidate.trim();
+    if (trimmed.length === 0) {
+      return;
+    }
+
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) {
+      return;
+    }
+
+    seen.add(key);
+    candidates.push(trimmed);
+  };
+
+  for (const pattern of patterns) {
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(message)) !== null) {
+      addCandidate(match[0]);
+      addCandidate(match[1]);
+    }
+  }
+
+  return candidates;
+}
+
+function findAllCaseInsensitiveOccurrences(text: string, search: string): number[] {
+  const haystack = text.toLowerCase();
+  const needle = search.toLowerCase();
+  const hits: number[] = [];
+
+  let index = haystack.indexOf(needle);
+  while (index !== -1) {
+    hits.push(index);
+    index = haystack.indexOf(needle, index + 1);
+  }
+
+  return hits;
+}
+
+function findCandidateRange(
+  lineText: string,
+  anchor: number,
+  candidate: string
+): DiagnosticCharacterRange | null {
+  const hits = findAllCaseInsensitiveOccurrences(lineText, candidate);
+  if (hits.length === 0) {
+    return null;
+  }
+
+  const exactStart = hits.find((hit) => hit === anchor);
+  if (exactStart !== undefined) {
+    return {
+      startCharacter: exactStart,
+      endCharacter: exactStart + candidate.length,
+    };
+  }
+
+  const containing = hits.find(
+    (hit) => hit <= anchor && anchor < hit + candidate.length
+  );
+  if (containing !== undefined) {
+    return {
+      startCharacter: containing,
+      endCharacter: containing + candidate.length,
+    };
+  }
+
+  const nearest = hits.reduce((best, hit) => {
+    if (best === null) {
+      return hit;
+    }
+
+    const bestDistance = Math.abs(best - anchor);
+    const currentDistance = Math.abs(hit - anchor);
+    if (currentDistance < bestDistance) {
+      return hit;
+    }
+
+    if (currentDistance === bestDistance && hit > best) {
+      return hit;
+    }
+
+    return best;
+  }, null as number | null);
+
+  if (nearest === null) {
+    return null;
+  }
+
+  return {
+    startCharacter: nearest,
+    endCharacter: nearest + candidate.length,
+  };
+}
+
+function expandTokenRange(lineText: string, anchor: number): DiagnosticCharacterRange {
+  const currentChar = lineText[anchor];
+
+  if (currentChar === '"' || currentChar === "'") {
+    let end = anchor + 1;
+    while (end < lineText.length) {
+      if (lineText[end] === currentChar) {
+        end++;
+        break;
+      }
+      end++;
+    }
+
+    return {
+      startCharacter: anchor,
+      endCharacter: Math.max(anchor + 1, end),
+    };
+  }
+
+  if (isWordCharacter(currentChar)) {
+    let start = anchor;
+    while (start > 0 && isWordCharacter(lineText[start - 1])) {
+      start--;
+    }
+
+    let end = anchor + 1;
+    while (end < lineText.length && isWordCharacter(lineText[end])) {
+      end++;
+    }
+
+    return { startCharacter: start, endCharacter: end };
+  }
+
+  let start = anchor;
+  while (start > 0 && isPunctuationCharacter(lineText[start - 1])) {
+    start--;
+  }
+
+  let end = anchor + 1;
+  while (end < lineText.length && isPunctuationCharacter(lineText[end])) {
+    end++;
+  }
+
+  return { startCharacter: start, endCharacter: end };
+}
+
+/**
+ * Infer a diagnostic character range from a GHDL line/column location.
+ *
+ * GHDL reports only a starting column. This expands that location to the
+ * quoted symbol from the message when possible, otherwise to the token-like
+ * fragment at the reported column.
+ */
+export function inferDiagnosticCharacterRange(
+  lineText: string | undefined,
+  column: number,
+  message: string
+): DiagnosticCharacterRange {
+  const startCharacter = Math.max(0, column - 1);
+
+  if (!lineText || lineText.length === 0) {
+    return {
+      startCharacter,
+      endCharacter: startCharacter + 1,
+    };
+  }
+
+  const anchor = findDiagnosticAnchor(lineText, column);
+
+  for (const candidate of extractDiagnosticMessageCandidates(message)) {
+    const candidateRange = findCandidateRange(lineText, anchor, candidate);
+    if (candidateRange) {
+      return candidateRange;
+    }
+  }
+
+  return expandTokenRange(lineText, anchor);
+}
+
 /**
  * Parse a single line of GHDL output into a diagnostic entry.
  *
