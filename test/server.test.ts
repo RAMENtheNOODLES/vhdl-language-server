@@ -2,7 +2,11 @@
  * Tests for GHDL output parsing and URI conversion utilities.
  */
 
+import * as path from "path";
+
 import {
+  getGhdlStandardLibrarySourceGlobs,
+  inferGhdlLibraryNameFromSourcePath,
   parseGhdlOutputLine,
   parseGhdlOutput,
   filePathToUri,
@@ -289,6 +293,26 @@ describe("filePathToUri", () => {
     expect(uri.startsWith("file:///")).toBe(true);
     expect(uri.toLowerCase()).toContain("proj");
     expect(uri.toLowerCase()).toContain("top.vhd");
+  });
+});
+
+describe("GHDL standard library helpers", () => {
+  test("builds the expected VHDL-2008 source globs", () => {
+    const prefix = path.join("ghdl-root", "lib", "ghdl");
+    const globs = getGhdlStandardLibrarySourceGlobs(prefix, "08");
+
+    expect(globs).toEqual(expect.arrayContaining([
+      path.join(prefix, "src", "ieee2008", "*.{vhd,vhdl,vho,vht}").replace(/\\/g, "/"),
+      path.join(prefix, "src", "std", "*.{vhd,vhdl,vho,vht}").replace(/\\/g, "/"),
+      path.join(prefix, "src", "std", "v08", "*.{vhd,vhdl,vho,vht}").replace(/\\/g, "/"),
+    ]));
+  });
+
+  test("infers ieee from ieee2008 source paths", () => {
+    const sourceRoot = path.join("ghdl-root", "lib", "ghdl", "src");
+    const filePath = path.join(sourceRoot, "ieee2008", "std_logic_1164.vhdl");
+
+    expect(inferGhdlLibraryNameFromSourcePath(filePath, sourceRoot)).toBe("ieee");
   });
 });
 

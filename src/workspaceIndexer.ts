@@ -10,7 +10,12 @@ import {
 import { TextDocument } from "vscode-languageserver-textdocument";
 import { URI } from "vscode-uri";
 
-import { VhdlConfig } from "./ghdl";
+import {
+    discoverGhdlStandardLibrarySourceInfo,
+    inferGhdlLibraryNameFromSourcePath,
+    type GhdlStandardLibrarySourceInfo,
+    VhdlConfig,
+} from "./ghdl";
 import {
     CallableEntry,
     DesignUnitEntry,
@@ -72,6 +77,9 @@ export class WorkspaceIndexer {
     /** Guards against overlapping scans */
     private scanInProgress = false;
 
+    /** Cached standard-library source layout discovered from GHDL. */
+    private ghdlStandardLibraryInfo: GhdlStandardLibrarySourceInfo | null = null;
+
     constructor(
         connection: Connection,
         docs: TextDocuments<TextDocument>,
@@ -89,6 +97,7 @@ export class WorkspaceIndexer {
 
     updateConfig(vhdlConfig: VhdlConfig): void {
         this.vConfig = vhdlConfig;
+        this.refreshGhdlStandardLibraryInfo();
     }
 
     /**
@@ -96,6 +105,7 @@ export class WorkspaceIndexer {
      */
     start(initParams: InitializeParams): void {
         this.workspaceRoots = getWorkspaceRoots(initParams);
+        this.refreshGhdlStandardLibraryInfo();
         this.conn.console.log(
             `[indexer] start – roots: ${JSON.stringify(this.workspaceRoots)}`
         );
@@ -246,29 +256,58 @@ export class WorkspaceIndexer {
     // -----------------------------------------------------------------------
 
     private async performScan(): Promise<void> {
-        if (this.workspaceRoots.length === 0) {
+        const scanGlobs = [
+            ...this.vConfig.workspace.sourceGlobs,
+            ...(this.ghdlStandardLibraryInfo?.sourceGlobs ?? []),
+        ];
+        const relativeGlobs = scanGlobs.filter((glob) => !path.isAbsolute(glob));
+        const absoluteGlobs = scanGlobs.filter((glob) => path.isAbsolute(glob));
+
+        if (this.workspaceRoots.length === 0 && absoluteGlobs.length === 0) {
             this.conn.console.log("[indexer] no workspace roots – scan skipped");
             return;
         }
 
-        const globs = this.vConfig.workspace.sourceGlobs;
-        const filePaths: string[] = [];
+        const filePathSet = new Set<string>();
 
-        for (const root of this.workspaceRoots) {
+        if (relativeGlobs.length > 0) {
+            for (const root of this.workspaceRoots) {
+                try {
+                    const found = await fg(relativeGlobs, {
+                        cwd: root,
+                        absolute: true,
+                        onlyFiles: true,
+                        suppressErrors: true,
+                    });
+                    for (const filePath of found) {
+                        filePathSet.add(path.normalize(filePath));
+                    }
+                } catch (e) {
+                    this.conn.console.error(
+                        `[indexer] glob error in ${root}: ${String(e)}`
+                    );
+                }
+            }
+        }
+
+        if (absoluteGlobs.length > 0) {
             try {
-                const found = await fg(globs, {
-                    cwd: root,
+                const found = await fg(absoluteGlobs, {
                     absolute: true,
                     onlyFiles: true,
                     suppressErrors: true,
                 });
-                filePaths.push(...found);
+                for (const filePath of found) {
+                    filePathSet.add(path.normalize(filePath));
+                }
             } catch (e) {
                 this.conn.console.error(
-                    `[indexer] glob error in ${root}: ${String(e)}`
+                    `[indexer] absolute glob error: ${String(e)}`
                 );
             }
         }
+
+        const filePaths = [...filePathSet].sort((a, b) => a.localeCompare(b));
 
         this.conn.console.log(
             `[indexer] scan start – ${filePaths.length} candidate files`
@@ -322,6 +361,7 @@ export class WorkspaceIndexer {
         const uri = doc.uri;
         try {
             const result = indexText(doc);
+            this.annotatePackageLibraries(result, uri);
 
             // Remove stale entries for this URI from global indexes
             this.removeFromGlobalIndexes(uri);
@@ -359,6 +399,53 @@ export class WorkspaceIndexer {
             this.conn.console.error(
                 `[indexer] indexText error for ${uri}: ${String(e)}`
             );
+        }
+    }
+
+    private refreshGhdlStandardLibraryInfo(): void {
+        if (!this.vConfig.workspace.includeGhdlStandardLibraries) {
+            this.ghdlStandardLibraryInfo = null;
+            return;
+        }
+
+        this.ghdlStandardLibraryInfo = discoverGhdlStandardLibrarySourceInfo(this.vConfig);
+        if (this.ghdlStandardLibraryInfo) {
+            this.conn.console.log(
+                `[indexer] discovered GHDL standard-library sources in ${this.ghdlStandardLibraryInfo.sourceRoot}`
+            );
+        } else {
+            this.conn.console.log("[indexer] GHDL standard-library sources unavailable");
+        }
+    }
+
+    private annotatePackageLibraries(result: IndexResult, uri: string): void {
+        if (!this.ghdlStandardLibraryInfo) {
+            return;
+        }
+
+        let fsPath: string;
+        try {
+            fsPath = URI.parse(uri).fsPath;
+        } catch {
+            return;
+        }
+
+        const libraryName = inferGhdlLibraryNameFromSourcePath(
+            fsPath,
+            this.ghdlStandardLibraryInfo.sourceRoot
+        );
+        if (!libraryName) {
+            return;
+        }
+
+        const libraryNameLower = libraryName.toLowerCase();
+        for (const pkg of [...result.packages, ...result.packageBodies]) {
+            pkg.libraryName = libraryName;
+            pkg.libraryNameLower = libraryNameLower;
+            for (const member of pkg.members) {
+                member.libraryName = libraryName;
+                member.libraryNameLower = libraryNameLower;
+            }
         }
     }
 

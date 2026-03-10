@@ -16,7 +16,7 @@ import {
 } from "../src/indexing/indexTextSignature";
 
 function makeIndex(
-  docs: Array<{ uri: string; text: string }>
+  docs: Array<{ uri: string; text: string; libraryName?: string }>
 ): SemanticSymbolIndex {
   const byUri = new Map<string, ReturnType<typeof indexText>>();
   const entities: DesignUnitEntry[] = [];
@@ -25,8 +25,19 @@ function makeIndex(
   const packages: PackageEntry[] = [];
   const packageBodies: PackageEntry[] = [];
 
-  for (const { uri, text } of docs) {
+  for (const { uri, text, libraryName } of docs) {
     const result = indexText(TextDocument.create(uri, "vhdl", 0, text));
+    if (libraryName) {
+      const libraryNameLower = libraryName.toLowerCase();
+      for (const pkg of [...result.packages, ...result.packageBodies]) {
+        pkg.libraryName = libraryName;
+        pkg.libraryNameLower = libraryNameLower;
+        for (const member of pkg.members) {
+          member.libraryName = libraryName;
+          member.libraryNameLower = libraryNameLower;
+        }
+      }
+    }
     byUri.set(uri, result);
     entities.push(...result.entities);
     components.push(...result.components);
@@ -411,6 +422,48 @@ end architecture rtl;
     expect(labels).toContain("ANSWER");
     expect(labels).toContain("word_t");
     expect(labels).toContain("inc");
+  });
+
+  test("completion resolves imported library functions when another library defines the same package name", () => {
+    const ieeePkgUri = "file:///ieee/std_logic_1164.vhd";
+    const vendorPkgUri = "file:///vendor/std_logic_1164.vhd";
+    const ieeePackageDecl = `
+package std_logic_1164 is
+  function rising_edge(signal clk : std_logic) return boolean;
+end package std_logic_1164;
+`;
+    const vendorPackageDecl = `
+package std_logic_1164 is
+  function vendor_edge(signal clk : std_logic) return boolean;
+end package std_logic_1164;
+`;
+    const consumerText = `
+library ieee;
+use ieee.std_logic_1164.all;
+
+entity top is
+end entity top;
+
+architecture rtl of top is
+begin
+  ris
+end architecture rtl;
+`;
+    const index = makeIndex([
+      { uri: ieeePkgUri, text: ieeePackageDecl, libraryName: "ieee" },
+      { uri: vendorPkgUri, text: vendorPackageDecl, libraryName: "vendor" },
+      { uri: consumerUri, text: consumerText },
+    ]);
+
+    const items = resolveCompletionItems(
+      consumerText,
+      consumerText.lastIndexOf("ris") + "ris".length,
+      consumerUri,
+      index
+    );
+
+    expect(items.map((item) => item.label)).toContain("rising_edge");
+    expect(items.map((item) => item.label)).not.toContain("vendor_edge");
   });
 
   test("package-body-only members stay internal to the body", () => {

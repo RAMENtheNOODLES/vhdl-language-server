@@ -248,11 +248,14 @@ function isUseClauseContext(text: string, offset: number): boolean {
 }
 
 function getMemberKey(entry: PackageMemberEntry): string {
-    return `${entry.uri}:${entry.packageNameLower}:${entry.kind}:${entry.startOffset}:${entry.endOffset}`;
+    return `${entry.uri}:${entry.libraryNameLower ?? ""}:${entry.packageNameLower}:${entry.kind}:${entry.startOffset}:${entry.endOffset}`;
 }
 
 function sortMembers(entries: PackageMemberEntry[]): PackageMemberEntry[] {
     return [...entries].sort((a, b) => {
+        if ((a.libraryNameLower ?? "") !== (b.libraryNameLower ?? "")) {
+            return (a.libraryNameLower ?? "").localeCompare(b.libraryNameLower ?? "");
+        }
         if (a.packageNameLower !== b.packageNameLower) {
             return a.packageNameLower.localeCompare(b.packageNameLower);
         }
@@ -306,12 +309,52 @@ function resolveUseClauseTargetPackages(
         return [];
     }
 
-    const candidates = index.findPackages(useClause.packageNameLower);
+    const candidates = selectPackageCandidates(
+        useClause.packageNameLower,
+        index,
+        useClause.libraryNameLower
+    );
     if (!useClause.libraryNameLower || useClause.libraryNameLower === "work") {
         return candidates;
     }
 
+    return candidates;
+}
+
+function selectPackageCandidates(
+    packageNameLower: string,
+    index: SemanticSymbolIndex,
+    libraryNameLower?: string | null
+): PackageEntry[] {
+    const candidates = index.findPackages(packageNameLower);
+    if (!libraryNameLower || libraryNameLower === "work") {
+        return candidates;
+    }
+
+    const libraryMatches = candidates.filter(
+        (entry) => entry.libraryNameLower === libraryNameLower
+    );
+    if (libraryMatches.length > 0) {
+        return libraryMatches;
+    }
+
     return candidates.length <= 1 ? candidates : [];
+}
+
+function packagesForLibraryCompletion(
+    libraryNameLower: string,
+    currentUri: string,
+    offset: number,
+    index: SemanticSymbolIndex
+): PackageEntry[] {
+    const libraryMatches = index
+        .getAllPackages()
+        .filter((entry) => entry.libraryNameLower === libraryNameLower);
+    if (libraryMatches.length > 0) {
+        return pickBest(libraryMatches, currentUri, offset);
+    }
+
+    return pickBest(index.getAllPackages(), currentUri, offset);
 }
 
 function getCurrentPackageBody(
@@ -625,11 +668,11 @@ function resolvePackageReference(
     index: SemanticSymbolIndex,
     libraryNameLower?: string | null
 ): PackageEntry | null {
-    const candidates = libraryNameLower && libraryNameLower !== "work"
-        ? (index.findPackages(packageNameLower).length <= 1
-            ? index.findPackages(packageNameLower)
-            : [])
-        : index.findPackages(packageNameLower);
+    const candidates = selectPackageCandidates(
+        packageNameLower,
+        index,
+        libraryNameLower
+    );
 
     return pickBest(candidates, currentUri, offset)[0] ?? null;
 }
@@ -661,11 +704,11 @@ function resolvePackageMemberReference(
     docState: DocState,
     libraryNameLower?: string | null
 ): SemanticResolution {
-    const packageCandidates = libraryNameLower && libraryNameLower !== "work"
-        ? (index.findPackages(packageNameLower).length <= 1
-            ? index.findPackages(packageNameLower)
-            : [])
-        : index.findPackages(packageNameLower);
+    const packageCandidates = selectPackageCandidates(
+        packageNameLower,
+        index,
+        libraryNameLower
+    );
     if (packageCandidates.length === 0) {
         return unresolved();
     }
@@ -918,7 +961,12 @@ export function resolveSelectedNameCompletionScope(
         if (isLibraryLikeName(firstSegmentLower, currentUri, offset, index, docState)) {
             return {
                 kind: "packages",
-                packages: pickBest(index.getAllPackages(), currentUri, offset),
+                packages: packagesForLibraryCompletion(
+                    firstSegmentLower,
+                    currentUri,
+                    offset,
+                    index
+                ),
                 partial: prefixInfo.partial,
                 partialLower: prefixInfo.partialLower,
                 inUseClause,
@@ -947,9 +995,7 @@ export function resolveSelectedNameCompletionScope(
 
     if (prefixInfo.prefixSegmentsLower.length === 2) {
         const packageCandidates = secondSegmentLower
-            ? (index.findPackages(secondSegmentLower).length <= 1 || firstSegmentLower === "work"
-                ? index.findPackages(secondSegmentLower)
-                : [])
+            ? selectPackageCandidates(secondSegmentLower, index, firstSegmentLower)
             : [];
         return {
             kind: "members",

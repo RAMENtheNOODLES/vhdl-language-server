@@ -495,7 +495,10 @@ function describePackageMemberGroup(group: PackageMemberGroup, sourceLabel: stri
         return group.members[0].signature;
     }
 
-    const sources = [...new Set(group.members.map((entry) => `${entry.packageName}.${entry.name}`))];
+    const sources = [...new Set(group.members.map((entry) => {
+        const packagePrefix = entry.libraryName ? `${entry.libraryName}.` : "";
+        return `${packagePrefix}${entry.packageName}.${entry.name}`;
+    }))];
     return `${sourceLabel}: ${sources.join(", ")}`;
 }
 

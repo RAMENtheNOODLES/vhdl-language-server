@@ -92,6 +92,8 @@ export interface PackageMemberEntry {
     signature: string;
     packageName: string;
     packageNameLower: string;
+    libraryName?: string | null;
+    libraryNameLower?: string | null;
     visibility: "public" | "body";
 }
 
@@ -107,6 +109,8 @@ export interface PackageEntry {
     blockStartOffset: number;
     blockEndOffset: number;
     blockRange: Range;
+    libraryName?: string | null;
+    libraryNameLower?: string | null;
     members: PackageMemberEntry[];
 }
 

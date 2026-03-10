@@ -26,6 +26,7 @@ export interface VhdlWorkspaceIndexingConfig {
 
 export interface VhdlWorkspaceConfig {
   sourceGlobs: string[];
+  includeGhdlStandardLibraries: boolean;
   indexing: VhdlWorkspaceIndexingConfig;
 }
 
@@ -51,6 +52,7 @@ export const defaultConfig: VhdlConfig = {
   },
   workspace: {
     sourceGlobs: ["**/*.vhd", "**/*.vhdl", "**/*.vho", "**/*.vht"],
+    includeGhdlStandardLibraries: true,
     indexing: {
       enabled: true,
       rescanIntervalMs: 30000,
@@ -376,6 +378,114 @@ export function filePathToUri(filePath: string): string {
   return URI.file(filePath).toString();
 }
 
+export interface GhdlStandardLibrarySourceInfo {
+  libraryPrefix: string;
+  sourceRoot: string;
+  sourceGlobs: string[];
+}
+
+function normalizeGlobPath(value: string): string {
+  return value.replace(/\\/g, "/");
+}
+
+function pushIfMissing(values: string[], value: string): void {
+  if (!values.includes(value)) {
+    values.push(value);
+  }
+}
+
+export function getGhdlStandardLibrarySourceGlobs(
+  libraryPrefix: string,
+  languageStandard: VhdlConfig["languageStandard"]
+): string[] {
+  const sourceRoot = path.join(libraryPrefix, "src");
+  const filePattern = "*.{vhd,vhdl,vho,vht}";
+  const globs: string[] = [];
+
+  const addGlob = (...segments: string[]): void => {
+    pushIfMissing(globs, normalizeGlobPath(path.join(...segments, filePattern)));
+  };
+
+  switch (languageStandard) {
+    case "87":
+      addGlob(sourceRoot, "ieee");
+      addGlob(sourceRoot, "ieee", "v87");
+      addGlob(sourceRoot, "std", "v87");
+      break;
+    case "93":
+    case "02":
+      addGlob(sourceRoot, "ieee");
+      addGlob(sourceRoot, "ieee", "v93");
+      addGlob(sourceRoot, "std", "v93");
+      break;
+    case "08":
+    case "19":
+      addGlob(sourceRoot, "ieee2008");
+      addGlob(sourceRoot, "std");
+      addGlob(sourceRoot, "std", "v08");
+      break;
+  }
+
+  return globs;
+}
+
+export function inferGhdlLibraryNameFromSourcePath(
+  filePath: string,
+  sourceRoot: string
+): string | null {
+  const relativePath = path.relative(path.resolve(sourceRoot), path.resolve(filePath));
+  if (!relativePath || relativePath.startsWith("..") || path.isAbsolute(relativePath)) {
+    return null;
+  }
+
+  const segments = relativePath.split(/[\\/]+/).filter(Boolean);
+  const [firstSegment, secondSegment] = segments;
+  if (!firstSegment) {
+    return null;
+  }
+
+  switch (firstSegment.toLowerCase()) {
+    case "ieee2008":
+      return "ieee";
+    case "vendors":
+      return secondSegment ?? null;
+    default:
+      return firstSegment;
+  }
+}
+
+export function discoverGhdlStandardLibrarySourceInfo(
+  config: Pick<VhdlConfig, "languageStandard" | "ghdl">
+): GhdlStandardLibrarySourceInfo | null {
+  const ghdlBin = config.ghdl.path || "ghdl";
+  const result = spawnSync(ghdlBin, ["--dispconfig"], {
+    encoding: "utf8",
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+
+  if (result.error) {
+    return null;
+  }
+
+  const output = (result.stdout || "") + (result.stderr || "");
+  const prefixMatch =
+    output.match(/^\s*library prefix:\s*(.+)$/im) ??
+    output.match(/^\s*library directory:\s*(.+)$/im);
+  if (!prefixMatch) {
+    return null;
+  }
+
+  const libraryPrefix = path.resolve(prefixMatch[1].trim().replace(/[\\/]+$/, ""));
+  return {
+    libraryPrefix,
+    sourceRoot: path.join(libraryPrefix, "src"),
+    sourceGlobs: getGhdlStandardLibrarySourceGlobs(
+      libraryPrefix,
+      config.languageStandard
+    ),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // GHDL runner
 // ---------------------------------------------------------------------------
@@ -454,6 +564,9 @@ export function mergeConfig(
     },
     workspace: {
       sourceGlobs: override.workspace?.sourceGlobs ?? base.workspace.sourceGlobs,
+      includeGhdlStandardLibraries:
+        override.workspace?.includeGhdlStandardLibraries ??
+        base.workspace.includeGhdlStandardLibraries,
       indexing: {
         enabled: override.workspace?.indexing?.enabled ?? base.workspace.indexing.enabled,
         rescanIntervalMs:
