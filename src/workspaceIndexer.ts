@@ -12,6 +12,7 @@ import { URI } from "vscode-uri";
 
 import { VhdlConfig } from "./ghdl";
 import {
+    CallableEntry,
     DesignUnitEntry,
     IndexResult,
     LocalDecl,
@@ -45,6 +46,9 @@ export class WorkspaceIndexer {
 
     /** Global component lookup: nameLower → DesignUnitEntry[] */
     private componentIndex: Map<string, DesignUnitEntry[]> = new Map();
+
+    /** Global callable lookup: nameLower → CallableEntry[] */
+    private callableIndex: Map<string, CallableEntry[]> = new Map();
 
     /** mtime cache for incremental reads */
     private mtimeCache: Map<string, number> = new Map();
@@ -143,6 +147,10 @@ export class WorkspaceIndexer {
         return this.componentIndex.get(nameLower) ?? [];
     }
 
+    findCallables(nameLower: string): CallableEntry[] {
+        return this.callableIndex.get(nameLower) ?? [];
+    }
+
     getDocLocals(uri: string): LocalDecl[] {
         return this.docIndex.get(uri)?.result.locals ?? [];
     }
@@ -155,6 +163,10 @@ export class WorkspaceIndexer {
         return this.docIndex.get(uri)?.result.components ?? [];
     }
 
+    getDocCallables(uri: string): CallableEntry[] {
+        return this.docIndex.get(uri)?.result.callables ?? [];
+    }
+
     /** Return every entity and component entry currently in the global indexes. */
     getAllDesignUnits(): DesignUnitEntry[] {
         const result: DesignUnitEntry[] = [];
@@ -162,6 +174,14 @@ export class WorkspaceIndexer {
             result.push(...entries);
         }
         for (const entries of this.componentIndex.values()) {
+            result.push(...entries);
+        }
+        return result;
+    }
+
+    getAllCallables(): CallableEntry[] {
+        const result: CallableEntry[] = [];
+        for (const entries of this.callableIndex.values()) {
             result.push(...entries);
         }
         return result;
@@ -266,6 +286,11 @@ export class WorkspaceIndexer {
                 list.push(c);
                 this.componentIndex.set(c.nameLower, list);
             }
+            for (const callable of result.callables) {
+                const list = this.callableIndex.get(callable.nameLower) ?? [];
+                list.push(callable);
+                this.callableIndex.set(callable.nameLower, list);
+            }
         } catch (e) {
             this.conn.console.error(
                 `[indexer] indexText error for ${uri}: ${String(e)}`
@@ -288,6 +313,14 @@ export class WorkspaceIndexer {
                 this.componentIndex.delete(key);
             } else {
                 this.componentIndex.set(key, filtered);
+            }
+        }
+        for (const [key, entries] of this.callableIndex) {
+            const filtered = entries.filter((entry) => entry.uri !== uri);
+            if (filtered.length === 0) {
+                this.callableIndex.delete(key);
+            } else {
+                this.callableIndex.set(key, filtered);
             }
         }
     }

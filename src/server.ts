@@ -16,7 +16,6 @@ import {
   TextDocumentSyncKind,
   InitializeResult,
   CompletionItem,
-  CompletionItemKind,
   TextDocumentPositionParams,
   Hover,
   MarkupKind,
@@ -51,6 +50,7 @@ import {
   formatHoverMarkdown,
   resolveHoverEntry,
 } from "./hoverResolver";
+import { resolveCompletionItems } from "./completionResolver";
 import type { DesignUnitEntry } from "./indexing/indexTextSignature";
 
 // ---------------------------------------------------------------------------
@@ -241,7 +241,7 @@ connection.onInitialize((_params: InitializeParams): InitializeResult => {
       hoverProvider: true,
       completionProvider: {
         resolveProvider: false,
-        triggerCharacters: [],
+        triggerCharacters: ["(", ",", ":", "."],
       },
       documentSymbolProvider: true,
       definitionProvider: true,
@@ -428,10 +428,20 @@ function getWordRangeAtOffset(
 // ---------------------------------------------------------------------------
 
 connection.onCompletion(
-  (_params: TextDocumentPositionParams): CompletionItem[] => {
-    return VHDL_KEYWORDS.map((keyword) => ({
-      label: keyword,
-      kind: CompletionItemKind.Keyword,
+  (params: TextDocumentPositionParams): CompletionItem[] => {
+    const document = documents.get(params.textDocument.uri);
+    if (!document) {
+      return [];
+    }
+
+    const text = document.getText();
+    const offset = document.offsetAt(params.position);
+
+    return resolveCompletionItems(text, offset, params.textDocument.uri, indexer).map((item) => ({
+      label: item.label,
+      kind: item.kind,
+      detail: item.detail,
+      sortText: item.sortText,
     }));
   }
 );

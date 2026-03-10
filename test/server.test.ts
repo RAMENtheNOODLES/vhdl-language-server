@@ -17,8 +17,15 @@ import {
   resolveHoverEntry,
   type HoverSymbolIndex,
 } from "../src/hoverResolver";
+import {
+  resolveCompletionItems,
+  type CompletionSymbolIndex,
+} from "../src/completionResolver";
 import { determineContext, pickBest } from "../src/workspaceIndexer";
-import type { DesignUnitEntry } from "../src/indexing/indexTextSignature";
+import type {
+  CallableEntry,
+  DesignUnitEntry,
+} from "../src/indexing/indexTextSignature";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -30,16 +37,18 @@ function makeDoc(text: string): TextDocument {
 
 function makeHoverIndex(
   docs: Array<{ uri: string; text: string }>
-): HoverSymbolIndex {
+): HoverSymbolIndex & CompletionSymbolIndex {
   const byUri = new Map<string, ReturnType<typeof indexText>>();
   const entities: DesignUnitEntry[] = [];
   const components: DesignUnitEntry[] = [];
+  const callables: CallableEntry[] = [];
 
   for (const { uri, text } of docs) {
     const result = indexText(TextDocument.create(uri, "vhdl", 0, text));
     byUri.set(uri, result);
     entities.push(...result.entities);
     components.push(...result.components);
+    callables.push(...result.callables);
   }
 
   return {
@@ -58,8 +67,14 @@ function makeHoverIndex(
     getDocComponents(uri: string) {
       return byUri.get(uri)?.components ?? [];
     },
+    getDocCallables(uri: string) {
+      return byUri.get(uri)?.callables ?? [];
+    },
     getAllDesignUnits(): DesignUnitEntry[] {
       return [...entities, ...components];
+    },
+    getAllCallables(): CallableEntry[] {
+      return [...callables];
     },
   };
 }
@@ -377,6 +392,45 @@ end architecture rtl;
 });
 
 // ---------------------------------------------------------------------------
+// indexText – callable extraction
+// ---------------------------------------------------------------------------
+
+describe("indexText – callable extraction", () => {
+  const vhdl = `
+architecture rtl of top is
+  function add_one(value_in : integer) return integer is
+  begin
+    return value_in + 1;
+  end function add_one;
+
+  procedure reset_counter(signal clk : in std_logic) is
+  begin
+    null;
+  end procedure reset_counter;
+begin
+end architecture rtl;
+`;
+
+  test("extracts functions and procedures", () => {
+    const result = indexText(makeDoc(vhdl));
+    const callableNames = result.callables.map((entry) => entry.nameLower);
+
+    expect(callableNames).toContain("add_one");
+    expect(callableNames).toContain("reset_counter");
+  });
+
+  test("extracts callable parameters and signatures", () => {
+    const result = indexText(makeDoc(vhdl));
+    const addOne = result.callables.find((entry) => entry.nameLower === "add_one");
+    const resetCounter = result.callables.find((entry) => entry.nameLower === "reset_counter");
+
+    expect(addOne?.signature).toBe("function add_one(value_in : integer) return integer");
+    expect(addOne?.params.map((param) => param.nameLower)).toContain("value_in");
+    expect(resetCounter?.params.map((param) => param.nameLower)).toContain("clk");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // resolveHoverEntry
 // ---------------------------------------------------------------------------
 
@@ -476,6 +530,132 @@ end entity my_comp;
 
     expect(entry?.kind).toBe("component");
     expect(entry?.signature).toBe("component my_comp");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveCompletionItems
+// ---------------------------------------------------------------------------
+
+describe("resolveCompletionItems", () => {
+  test("suggests visible variables, parameters, outer signals, and functions", () => {
+    const uri = "file:///top.vhd";
+    const text = `
+entity top is
+  port (
+    clk : in std_logic;
+    rst : in std_logic
+  );
+end entity top;
+
+architecture rtl of top is
+  signal outer_sig : std_logic;
+
+  function calc(sample_in : integer) return integer is
+    variable temp_value : integer;
+  begin
+    -- cursor
+    return temp_value;
+  end function calc;
+begin
+end architecture rtl;
+`;
+
+    const index = makeHoverIndex([{ uri, text }]);
+    const offset = text.indexOf("-- cursor");
+    const items = resolveCompletionItems(text, offset, uri, index);
+    const labels = items.map((item) => item.label);
+
+    expect(labels).toContain("sample_in");
+    expect(labels).toContain("temp_value");
+    expect(labels).toContain("outer_sig");
+    expect(labels).toContain("clk");
+    expect(labels).toContain("calc");
+  });
+
+  test("does not leak process-local variables from sibling processes", () => {
+    const uri = "file:///top.vhd";
+    const text = `
+architecture rtl of top is
+  signal shared_sig : std_logic;
+begin
+  p1 : process
+    variable only_p1 : integer;
+  begin
+    null;
+  end process;
+
+  p2 : process
+    variable only_p2 : integer;
+  begin
+    only
+    null;
+  end process;
+end architecture rtl;
+`;
+
+    const index = makeHoverIndex([{ uri, text }]);
+  const offset = text.lastIndexOf("only") + "only".length;
+    const items = resolveCompletionItems(text, offset, uri, index);
+    const labels = items.map((item) => item.label);
+
+    expect(labels).toContain("only_p2");
+    expect(labels).not.toContain("only_p1");
+  });
+
+  test("suggests target ports on the formal side of a port map", () => {
+    const uri = "file:///top.vhd";
+    const text = `
+architecture rtl of top is
+  component my_comp is
+    port (
+      clk : in std_logic;
+      rst : in std_logic
+    );
+  end component my_comp;
+begin
+  u1 : my_comp port map (
+    cl
+  );
+end architecture rtl;
+`;
+
+    const index = makeHoverIndex([{ uri, text }]);
+  const offset = text.lastIndexOf("cl") + "cl".length;
+    const items = resolveCompletionItems(text, offset, uri, index);
+    const labels = items.map((item) => item.label);
+
+    expect(labels).toContain("clk");
+    expect(labels).not.toContain("architecture");
+  });
+
+  test("suggests design units for instantiation targets", () => {
+    const uri = "file:///top.vhd";
+    const depUri = "file:///dep.vhd";
+    const text = `
+architecture rtl of top is
+begin
+  u1 : co
+end architecture rtl;
+`;
+    const depText = `
+component counter is
+end component counter;
+
+entity counter_ent is
+end entity counter_ent;
+`;
+
+    const index = makeHoverIndex([
+      { uri, text },
+      { uri: depUri, text: depText },
+    ]);
+    const offset = text.lastIndexOf("co") + "co".length;
+    const items = resolveCompletionItems(text, offset, uri, index);
+    const labels = items.map((item) => item.label);
+
+    expect(labels).toContain("counter");
+    expect(labels).toContain("counter_ent");
   });
 });
 
