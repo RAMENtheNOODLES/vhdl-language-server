@@ -4,9 +4,17 @@ import { VHDL_KEYWORDS } from "./ghdl";
 import type {
     CallableEntry,
     DesignUnitEntry,
-    LocalDecl,
+    PackageEntry,
+    PackageMemberEntry,
     PortGenericEntry,
 } from "./indexing/indexTextSignature";
+import {
+    collectPackageMemberGroupsForPackages,
+    collectVisibleImportedMemberGroups,
+    resolveSelectedNameCompletionScope,
+    type PackageMemberGroup,
+    type SemanticSymbolIndex,
+} from "./semanticResolver";
 import { pickBest } from "./workspaceIndexer";
 
 const CONTEXT_LOOKBACK_CHARS = 2000;
@@ -42,16 +50,7 @@ interface AssociationContext {
     unitNameLower: string | null;
 }
 
-export interface CompletionSymbolIndex {
-    findEntities(nameLower: string): DesignUnitEntry[];
-    findComponents(nameLower: string): DesignUnitEntry[];
-    getDocLocals(uri: string): LocalDecl[];
-    getDocEntities(uri: string): DesignUnitEntry[];
-    getDocComponents(uri: string): DesignUnitEntry[];
-    getDocCallables(uri: string): CallableEntry[];
-    getAllDesignUnits(): DesignUnitEntry[];
-    getAllCallables(): CallableEntry[];
-}
+export type CompletionSymbolIndex = SemanticSymbolIndex;
 
 export interface ResolvedCompletion {
     label: string;
@@ -453,6 +452,77 @@ function addDesignUnits(
     }
 }
 
+function addPackages(
+    entries: PackageEntry[],
+    results: ResolvedCompletion[],
+    seen: Set<string>,
+    prefixLower: string,
+    sortGroup: string
+): void {
+    for (const entry of entries) {
+        addCompletion(
+            results,
+            seen,
+            "designunit",
+            entry.name,
+            CompletionItemKind.Module,
+            sortGroup,
+            prefixLower,
+            entry.signature
+        );
+    }
+}
+
+function packageMemberCompletionKind(entry: PackageMemberEntry): CompletionItemKind {
+    switch (entry.kind) {
+        case "constant":
+            return CompletionItemKind.Constant;
+        case "function":
+        case "procedure":
+            return CompletionItemKind.Function;
+        case "type":
+        case "subtype":
+            return CompletionItemKind.Struct;
+        case "component":
+            return CompletionItemKind.Module;
+        case "alias":
+            return CompletionItemKind.Reference;
+    }
+}
+
+function describePackageMemberGroup(group: PackageMemberGroup, sourceLabel: string): string {
+    if (!group.ambiguous) {
+        return group.members[0].signature;
+    }
+
+    const sources = [...new Set(group.members.map((entry) => `${entry.packageName}.${entry.name}`))];
+    return `${sourceLabel}: ${sources.join(", ")}`;
+}
+
+function addPackageMemberGroups(
+    groups: PackageMemberGroup[],
+    results: ResolvedCompletion[],
+    seen: Set<string>,
+    prefixLower: string,
+    sortGroup: string,
+    sourceLabel: string
+): void {
+    for (const group of groups) {
+        addCompletion(
+            results,
+            seen,
+            group.members[0].kind === "function" || group.members[0].kind === "procedure"
+                ? "callable"
+                : "value",
+            group.name,
+            packageMemberCompletionKind(group.members[0]),
+            sortGroup,
+            prefixLower,
+            describePackageMemberGroup(group, sourceLabel)
+        );
+    }
+}
+
 function addKeywords(
     results: ResolvedCompletion[],
     seen: Set<string>,
@@ -542,6 +612,55 @@ function resolveInstantiationTargetCompletions(
     return results;
 }
 
+function resolveSelectedNameScopedCompletions(
+    text: string,
+    currentUri: string,
+    offset: number,
+    index: CompletionSymbolIndex
+): ResolvedCompletion[] | null {
+    const scope = resolveSelectedNameCompletionScope(text, offset, currentUri, index);
+    if (!scope) {
+        return null;
+    }
+
+    const results: ResolvedCompletion[] = [];
+    const seen = new Set<string>();
+
+    if (scope.kind === "packages") {
+        addPackages(
+            pickBest(scope.packages, currentUri, offset),
+            results,
+            seen,
+            scope.partialLower,
+            "00"
+        );
+        return results;
+    }
+
+    if (scope.inUseClause) {
+        addCompletion(
+            results,
+            seen,
+            "keyword",
+            "all",
+            CompletionItemKind.Keyword,
+            "00",
+            scope.partialLower,
+            "use all"
+        );
+    }
+
+    addPackageMemberGroups(
+        collectPackageMemberGroupsForPackages(scope.packages, currentUri, offset, index),
+        results,
+        seen,
+        scope.partialLower,
+        "01",
+        "ambiguous package member"
+    );
+    return results;
+}
+
 function resolveGeneralCompletions(
     text: string,
     currentUri: string,
@@ -604,6 +723,15 @@ function resolveGeneralCompletions(
         "02"
     );
 
+    addPackageMemberGroups(
+        collectVisibleImportedMemberGroups(currentUri, offset, index),
+        results,
+        seen,
+        prefixLower,
+        "03",
+        "ambiguous import"
+    );
+
     const visibleDocCallables = sortByScopeAndOffset(
         index
             .getDocCallables(currentUri)
@@ -617,21 +745,29 @@ function resolveGeneralCompletions(
         offset,
         (entry) => entry.blockStartOffset
     );
-    addCallableEntries(visibleDocCallables, results, seen, prefixLower, "03");
+    addCallableEntries(visibleDocCallables, results, seen, prefixLower, "04");
 
     if (prefixLower.length > 0) {
         const workspaceCallables = index
             .getAllCallables()
             .filter((entry) => entry.uri !== currentUri)
             .sort((a, b) => a.nameLower.localeCompare(b.nameLower));
-        addCallableEntries(workspaceCallables, results, seen, prefixLower, "04");
+        addCallableEntries(workspaceCallables, results, seen, prefixLower, "05");
+
+        addPackages(
+            pickBest(index.getAllPackages(), currentUri, offset),
+            results,
+            seen,
+            prefixLower,
+            "06"
+        );
 
         addDesignUnits(
             pickBest(index.getAllDesignUnits(), currentUri, offset),
             results,
             seen,
             prefixLower,
-            "05"
+            "07"
         );
 
         addKeywords(results, seen, prefixLower);
@@ -674,6 +810,16 @@ export function resolveCompletionItems(
             index,
             prefix.prefixLower
         );
+    }
+
+    const selectedNameItems = resolveSelectedNameScopedCompletions(
+        text,
+        currentUri,
+        offset,
+        index
+    );
+    if (selectedNameItems) {
+        return selectedNameItems;
     }
 
     return resolveGeneralCompletions(

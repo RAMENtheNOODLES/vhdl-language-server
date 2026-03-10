@@ -15,7 +15,11 @@ import {
     CallableEntry,
     DesignUnitEntry,
     IndexResult,
+    LibraryClauseEntry,
     LocalDecl,
+    PackageEntry,
+    TopLevelUnitEntry,
+    UseClauseEntry,
     indexText,
 } from "./indexing/indexTextSignature";
 import { makeTextDocument } from "./indexing/textDocUtils";
@@ -49,6 +53,12 @@ export class WorkspaceIndexer {
 
     /** Global callable lookup: nameLower → CallableEntry[] */
     private callableIndex: Map<string, CallableEntry[]> = new Map();
+
+    /** Global package declaration lookup: nameLower → PackageEntry[] */
+    private packageIndex: Map<string, PackageEntry[]> = new Map();
+
+    /** Global package body lookup: nameLower → PackageEntry[] */
+    private packageBodyIndex: Map<string, PackageEntry[]> = new Map();
 
     /** mtime cache for incremental reads */
     private mtimeCache: Map<string, number> = new Map();
@@ -151,6 +161,14 @@ export class WorkspaceIndexer {
         return this.callableIndex.get(nameLower) ?? [];
     }
 
+    findPackages(nameLower: string): PackageEntry[] {
+        return this.packageIndex.get(nameLower) ?? [];
+    }
+
+    findPackageBodies(nameLower: string): PackageEntry[] {
+        return this.packageBodyIndex.get(nameLower) ?? [];
+    }
+
     getDocLocals(uri: string): LocalDecl[] {
         return this.docIndex.get(uri)?.result.locals ?? [];
     }
@@ -165,6 +183,26 @@ export class WorkspaceIndexer {
 
     getDocCallables(uri: string): CallableEntry[] {
         return this.docIndex.get(uri)?.result.callables ?? [];
+    }
+
+    getDocPackages(uri: string): PackageEntry[] {
+        return this.docIndex.get(uri)?.result.packages ?? [];
+    }
+
+    getDocPackageBodies(uri: string): PackageEntry[] {
+        return this.docIndex.get(uri)?.result.packageBodies ?? [];
+    }
+
+    getDocLibraryClauses(uri: string): LibraryClauseEntry[] {
+        return this.docIndex.get(uri)?.result.libraryClauses ?? [];
+    }
+
+    getDocUseClauses(uri: string): UseClauseEntry[] {
+        return this.docIndex.get(uri)?.result.useClauses ?? [];
+    }
+
+    getDocTopLevelUnits(uri: string): TopLevelUnitEntry[] {
+        return this.docIndex.get(uri)?.result.topLevelUnits ?? [];
     }
 
     /** Return every entity and component entry currently in the global indexes. */
@@ -182,6 +220,22 @@ export class WorkspaceIndexer {
     getAllCallables(): CallableEntry[] {
         const result: CallableEntry[] = [];
         for (const entries of this.callableIndex.values()) {
+            result.push(...entries);
+        }
+        return result;
+    }
+
+    getAllPackages(): PackageEntry[] {
+        const result: PackageEntry[] = [];
+        for (const entries of this.packageIndex.values()) {
+            result.push(...entries);
+        }
+        return result;
+    }
+
+    getAllPackageBodies(): PackageEntry[] {
+        const result: PackageEntry[] = [];
+        for (const entries of this.packageBodyIndex.values()) {
             result.push(...entries);
         }
         return result;
@@ -291,6 +345,16 @@ export class WorkspaceIndexer {
                 list.push(callable);
                 this.callableIndex.set(callable.nameLower, list);
             }
+            for (const pkg of result.packages) {
+                const list = this.packageIndex.get(pkg.nameLower) ?? [];
+                list.push(pkg);
+                this.packageIndex.set(pkg.nameLower, list);
+            }
+            for (const pkgBody of result.packageBodies) {
+                const list = this.packageBodyIndex.get(pkgBody.nameLower) ?? [];
+                list.push(pkgBody);
+                this.packageBodyIndex.set(pkgBody.nameLower, list);
+            }
         } catch (e) {
             this.conn.console.error(
                 `[indexer] indexText error for ${uri}: ${String(e)}`
@@ -321,6 +385,22 @@ export class WorkspaceIndexer {
                 this.callableIndex.delete(key);
             } else {
                 this.callableIndex.set(key, filtered);
+            }
+        }
+        for (const [key, entries] of this.packageIndex) {
+            const filtered = entries.filter((entry) => entry.uri !== uri);
+            if (filtered.length === 0) {
+                this.packageIndex.delete(key);
+            } else {
+                this.packageIndex.set(key, filtered);
+            }
+        }
+        for (const [key, entries] of this.packageBodyIndex) {
+            const filtered = entries.filter((entry) => entry.uri !== uri);
+            if (filtered.length === 0) {
+                this.packageBodyIndex.delete(key);
+            } else {
+                this.packageBodyIndex.set(key, filtered);
             }
         }
     }
@@ -401,7 +481,13 @@ export function determineContext(
 
     // Instantiation target: label : <cursor>  (possibly 'entity' keyword before)
     // Handles: inst1 : my_comp  and  inst1 : entity work.my_comp
-    if (/\w[\w\s]*:\s*(?:entity\s+\w+\.)?$/.test(before)) {
+    const statementBoundary = Math.max(before.lastIndexOf(";"), before.lastIndexOf("\n"));
+    const statementFragment = before.slice(statementBoundary + 1);
+    if (/^\s*(signal|variable|constant|alias|subtype|type|file)\b/.test(statementFragment)) {
+        return "general";
+    }
+
+    if (/^\s*\w+\s*:\s*(?:entity\s+\w+\.)?$/.test(statementFragment)) {
         return "instantiation_target";
     }
 
@@ -417,11 +503,11 @@ export function determineContext(
  *
  * Returns all candidates sorted best-first; callers can take [0] or [:N].
  */
-export function pickBest(
-    candidates: DesignUnitEntry[],
+export function pickBest<T extends { uri: string; nameStartOffset: number }>(
+    candidates: T[],
     currentUri: string,
     currentOffset: number
-): DesignUnitEntry[] {
+): T[] {
     if (candidates.length <= 1) return candidates.slice();
 
     const currentFsPath = tryFsPath(currentUri);

@@ -25,6 +25,7 @@ import { determineContext, pickBest } from "../src/workspaceIndexer";
 import type {
   CallableEntry,
   DesignUnitEntry,
+  PackageEntry,
 } from "../src/indexing/indexTextSignature";
 
 // ---------------------------------------------------------------------------
@@ -42,6 +43,8 @@ function makeHoverIndex(
   const entities: DesignUnitEntry[] = [];
   const components: DesignUnitEntry[] = [];
   const callables: CallableEntry[] = [];
+  const packages: PackageEntry[] = [];
+  const packageBodies: PackageEntry[] = [];
 
   for (const { uri, text } of docs) {
     const result = indexText(TextDocument.create(uri, "vhdl", 0, text));
@@ -49,6 +52,8 @@ function makeHoverIndex(
     entities.push(...result.entities);
     components.push(...result.components);
     callables.push(...result.callables);
+    packages.push(...result.packages);
+    packageBodies.push(...result.packageBodies);
   }
 
   return {
@@ -57,6 +62,12 @@ function makeHoverIndex(
     },
     findComponents(nameLower: string): DesignUnitEntry[] {
       return components.filter((entry) => entry.nameLower === nameLower);
+    },
+    findPackages(nameLower: string): PackageEntry[] {
+      return packages.filter((entry) => entry.nameLower === nameLower);
+    },
+    findPackageBodies(nameLower: string): PackageEntry[] {
+      return packageBodies.filter((entry) => entry.nameLower === nameLower);
     },
     getDocLocals(uri: string) {
       return byUri.get(uri)?.locals ?? [];
@@ -70,11 +81,32 @@ function makeHoverIndex(
     getDocCallables(uri: string) {
       return byUri.get(uri)?.callables ?? [];
     },
+    getDocPackages(uri: string) {
+      return byUri.get(uri)?.packages ?? [];
+    },
+    getDocPackageBodies(uri: string) {
+      return byUri.get(uri)?.packageBodies ?? [];
+    },
+    getDocLibraryClauses(uri: string) {
+      return byUri.get(uri)?.libraryClauses ?? [];
+    },
+    getDocUseClauses(uri: string) {
+      return byUri.get(uri)?.useClauses ?? [];
+    },
+    getDocTopLevelUnits(uri: string) {
+      return byUri.get(uri)?.topLevelUnits ?? [];
+    },
     getAllDesignUnits(): DesignUnitEntry[] {
       return [...entities, ...components];
     },
     getAllCallables(): CallableEntry[] {
       return [...callables];
+    },
+    getAllPackages(): PackageEntry[] {
+      return [...packages];
+    },
+    getAllPackageBodies(): PackageEntry[] {
+      return [...packageBodies];
     },
   };
 }
