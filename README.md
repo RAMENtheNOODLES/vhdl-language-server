@@ -5,6 +5,7 @@ A TypeScript-based [Language Server Protocol (LSP)](https://microsoft.github.io/
 ## Features
 
 - **Keyword completion** – all VHDL-2008 reserved words.
+- **Imported library completion** – automatically indexes GHDL standard-library packages so functions, constants, and types from `ieee`/`std` imports can appear in completions.
 - **Hover** – shows keyword help and declaration signatures for entities, components, ports, generics, signals, variables, and constants.
 - **Diagnostics** – optional GHDL-powered analysis or a lightweight built-in checker.
 - **Go to Definition** – workspace-wide Ctrl+Click navigation:
@@ -88,6 +89,7 @@ All settings live under the `vhdl` namespace:
 | `vhdl.ghdl.run` | `"onSave"` \| `"onType"` | `"onSave"` | When to run GHDL analysis. `"onType"` is debounced. |
 | `vhdl.ghdl.debounceMs` | number | `500` | Debounce delay in milliseconds for `"onType"` mode. |
 | `vhdl.workspace.sourceGlobs` | string[] | `["**/*.vhd","**/*.vhdl","**/*.vho","**/*.vht"]` | Glob patterns identifying VHDL source files used by workspace indexing and Go to Definition. |
+| `vhdl.workspace.includeGhdlStandardLibraries` | boolean | `true` | Index GHDL's bundled `ieee`/`std` source packages for imported-library hover, definition, and completion support. |
 | `vhdl.workspace.indexing.enabled` | boolean | `true` | Enable workspace-wide indexing for Go to Definition. |
 | `vhdl.workspace.indexing.rescanIntervalMs` | number | `30000` | How often (in milliseconds) to re-scan workspace files for index updates. Set to `0` to disable periodic rescans. |
 

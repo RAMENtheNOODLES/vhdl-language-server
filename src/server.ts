@@ -16,7 +16,6 @@ import {
   TextDocumentSyncKind,
   InitializeResult,
   CompletionItem,
-  CompletionItemKind,
   TextDocumentPositionParams,
   Hover,
   MarkupKind,
@@ -47,10 +46,8 @@ import {
   determineContext,
   pickBest,
 } from "./workspaceIndexer";
-import {
-  formatHoverMarkdown,
-  resolveHoverEntry,
-} from "./hoverResolver";
+import { resolveCompletionItems } from "./completionResolver";
+import { getSemanticEntryRange, getSemanticEntryUri, resolveSemanticEntry } from "./semanticResolver";
 import type { DesignUnitEntry } from "./indexing/indexTextSignature";
 
 // ---------------------------------------------------------------------------
@@ -241,7 +238,7 @@ connection.onInitialize((_params: InitializeParams): InitializeResult => {
       hoverProvider: true,
       completionProvider: {
         resolveProvider: false,
-        triggerCharacters: [],
+        triggerCharacters: ["(", ",", ":", "."],
       },
       documentSymbolProvider: true,
       definitionProvider: true,
@@ -372,21 +369,21 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
     };
   }
 
-  const hoverEntry = resolveHoverEntry(
+  const hoverResolution = resolveSemanticEntry(
     text,
     wordRange.start,
     wordRange.end,
     params.textDocument.uri,
     indexer
   );
-  if (!hoverEntry) {
+  if (!hoverResolution.entry) {
     return null;
   }
 
   return {
     contents: {
       kind: MarkupKind.Markdown,
-      value: formatHoverMarkdown(hoverEntry),
+      value: ["```vhdl", hoverResolution.entry.signature, "```"].join("\n"),
     },
     range: {
       start: document.positionAt(wordRange.start),
@@ -428,10 +425,20 @@ function getWordRangeAtOffset(
 // ---------------------------------------------------------------------------
 
 connection.onCompletion(
-  (_params: TextDocumentPositionParams): CompletionItem[] => {
-    return VHDL_KEYWORDS.map((keyword) => ({
-      label: keyword,
-      kind: CompletionItemKind.Keyword,
+  (params: TextDocumentPositionParams): CompletionItem[] => {
+    const document = documents.get(params.textDocument.uri);
+    if (!document) {
+      return [];
+    }
+
+    const text = document.getText();
+    const offset = document.offsetAt(params.position);
+
+    return resolveCompletionItems(text, offset, params.textDocument.uri, indexer).map((item) => ({
+      label: item.label,
+      kind: item.kind,
+      detail: item.detail,
+      sortText: item.sortText,
     }));
   }
 );
@@ -467,44 +474,22 @@ connection.onDefinition((params: DefinitionParams): Location[] => {
   // Skip VHDL keywords
   if (VHDL_KEYWORDS.includes(wordLower)) return [];
 
-  const ctx = determineContext(text, wordRange.start, wordRange.end);
-  const currentUri = params.textDocument.uri;
+  const resolution = resolveSemanticEntry(
+    text,
+    wordRange.start,
+    wordRange.end,
+    params.textDocument.uri,
+    indexer
+  );
 
-  // --- Context: formal side of port/generic map  (word =>)  ---
-  if (ctx === "port_map_formal") {
-    return resolvePortFormal(text, wordRange.start, wordLower, currentUri);
+  if (!resolution.entry) {
+    return [];
   }
 
-  // --- Context: component declaration name  (component <cursor>)  ---
-  if (ctx === "component_decl_name") {
-    const entities = pickBest(
-      indexer.findEntities(wordLower),
-      currentUri,
-      offset
-    );
-    return toLocations(entities.slice(0, 1));
-  }
-
-  // --- Context: instantiation target  (label : <cursor>)  ---
-  if (ctx === "instantiation_target") {
-    // Prefer component declaration; fall back to entity
-    const comps = pickBest(
-      indexer.findComponents(wordLower),
-      currentUri,
-      offset
-    );
-    if (comps.length > 0) return toLocations(comps.slice(0, 1));
-
-    const entities = pickBest(
-      indexer.findEntities(wordLower),
-      currentUri,
-      offset
-    );
-    return toLocations(entities.slice(0, 1));
-  }
-
-  // --- General: local decls → entity ports → global fallback ---
-  return resolveGeneral(text, offset, wordLower, currentUri);
+  return [{
+    uri: getSemanticEntryUri(resolution.entry, params.textDocument.uri),
+    range: getSemanticEntryRange(resolution.entry),
+  }];
 });
 
 /** Convert DesignUnitEntry[] to Location[] (using the name-identifier range). */

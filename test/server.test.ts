@@ -2,7 +2,11 @@
  * Tests for GHDL output parsing and URI conversion utilities.
  */
 
+import * as path from "path";
+
 import {
+  getGhdlStandardLibrarySourceGlobs,
+  inferGhdlLibraryNameFromSourcePath,
   parseGhdlOutputLine,
   parseGhdlOutput,
   filePathToUri,
@@ -17,8 +21,16 @@ import {
   resolveHoverEntry,
   type HoverSymbolIndex,
 } from "../src/hoverResolver";
+import {
+  resolveCompletionItems,
+  type CompletionSymbolIndex,
+} from "../src/completionResolver";
 import { determineContext, pickBest } from "../src/workspaceIndexer";
-import type { DesignUnitEntry } from "../src/indexing/indexTextSignature";
+import type {
+  CallableEntry,
+  DesignUnitEntry,
+  PackageEntry,
+} from "../src/indexing/indexTextSignature";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -30,16 +42,22 @@ function makeDoc(text: string): TextDocument {
 
 function makeHoverIndex(
   docs: Array<{ uri: string; text: string }>
-): HoverSymbolIndex {
+): HoverSymbolIndex & CompletionSymbolIndex {
   const byUri = new Map<string, ReturnType<typeof indexText>>();
   const entities: DesignUnitEntry[] = [];
   const components: DesignUnitEntry[] = [];
+  const callables: CallableEntry[] = [];
+  const packages: PackageEntry[] = [];
+  const packageBodies: PackageEntry[] = [];
 
   for (const { uri, text } of docs) {
     const result = indexText(TextDocument.create(uri, "vhdl", 0, text));
     byUri.set(uri, result);
     entities.push(...result.entities);
     components.push(...result.components);
+    callables.push(...result.callables);
+    packages.push(...result.packages);
+    packageBodies.push(...result.packageBodies);
   }
 
   return {
@@ -48,6 +66,12 @@ function makeHoverIndex(
     },
     findComponents(nameLower: string): DesignUnitEntry[] {
       return components.filter((entry) => entry.nameLower === nameLower);
+    },
+    findPackages(nameLower: string): PackageEntry[] {
+      return packages.filter((entry) => entry.nameLower === nameLower);
+    },
+    findPackageBodies(nameLower: string): PackageEntry[] {
+      return packageBodies.filter((entry) => entry.nameLower === nameLower);
     },
     getDocLocals(uri: string) {
       return byUri.get(uri)?.locals ?? [];
@@ -58,8 +82,35 @@ function makeHoverIndex(
     getDocComponents(uri: string) {
       return byUri.get(uri)?.components ?? [];
     },
+    getDocCallables(uri: string) {
+      return byUri.get(uri)?.callables ?? [];
+    },
+    getDocPackages(uri: string) {
+      return byUri.get(uri)?.packages ?? [];
+    },
+    getDocPackageBodies(uri: string) {
+      return byUri.get(uri)?.packageBodies ?? [];
+    },
+    getDocLibraryClauses(uri: string) {
+      return byUri.get(uri)?.libraryClauses ?? [];
+    },
+    getDocUseClauses(uri: string) {
+      return byUri.get(uri)?.useClauses ?? [];
+    },
+    getDocTopLevelUnits(uri: string) {
+      return byUri.get(uri)?.topLevelUnits ?? [];
+    },
     getAllDesignUnits(): DesignUnitEntry[] {
       return [...entities, ...components];
+    },
+    getAllCallables(): CallableEntry[] {
+      return [...callables];
+    },
+    getAllPackages(): PackageEntry[] {
+      return [...packages];
+    },
+    getAllPackageBodies(): PackageEntry[] {
+      return [...packageBodies];
     },
   };
 }
@@ -245,6 +296,26 @@ describe("filePathToUri", () => {
   });
 });
 
+describe("GHDL standard library helpers", () => {
+  test("builds the expected VHDL-2008 source globs", () => {
+    const prefix = path.join("ghdl-root", "lib", "ghdl");
+    const globs = getGhdlStandardLibrarySourceGlobs(prefix, "08");
+
+    expect(globs).toEqual(expect.arrayContaining([
+      path.join(prefix, "src", "ieee2008", "*.{vhd,vhdl,vho,vht}").replace(/\\/g, "/"),
+      path.join(prefix, "src", "std", "*.{vhd,vhdl,vho,vht}").replace(/\\/g, "/"),
+      path.join(prefix, "src", "std", "v08", "*.{vhd,vhdl,vho,vht}").replace(/\\/g, "/"),
+    ]));
+  });
+
+  test("infers ieee from ieee2008 source paths", () => {
+    const sourceRoot = path.join("ghdl-root", "lib", "ghdl", "src");
+    const filePath = path.join(sourceRoot, "ieee2008", "std_logic_1164.vhdl");
+
+    expect(inferGhdlLibraryNameFromSourcePath(filePath, sourceRoot)).toBe("ieee");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // indexText – entity extraction
 // ---------------------------------------------------------------------------
@@ -377,6 +448,45 @@ end architecture rtl;
 });
 
 // ---------------------------------------------------------------------------
+// indexText – callable extraction
+// ---------------------------------------------------------------------------
+
+describe("indexText – callable extraction", () => {
+  const vhdl = `
+architecture rtl of top is
+  function add_one(value_in : integer) return integer is
+  begin
+    return value_in + 1;
+  end function add_one;
+
+  procedure reset_counter(signal clk : in std_logic) is
+  begin
+    null;
+  end procedure reset_counter;
+begin
+end architecture rtl;
+`;
+
+  test("extracts functions and procedures", () => {
+    const result = indexText(makeDoc(vhdl));
+    const callableNames = result.callables.map((entry) => entry.nameLower);
+
+    expect(callableNames).toContain("add_one");
+    expect(callableNames).toContain("reset_counter");
+  });
+
+  test("extracts callable parameters and signatures", () => {
+    const result = indexText(makeDoc(vhdl));
+    const addOne = result.callables.find((entry) => entry.nameLower === "add_one");
+    const resetCounter = result.callables.find((entry) => entry.nameLower === "reset_counter");
+
+    expect(addOne?.signature).toBe("function add_one(value_in : integer) return integer");
+    expect(addOne?.params.map((param) => param.nameLower)).toContain("value_in");
+    expect(resetCounter?.params.map((param) => param.nameLower)).toContain("clk");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // resolveHoverEntry
 // ---------------------------------------------------------------------------
 
@@ -476,6 +586,132 @@ end entity my_comp;
 
     expect(entry?.kind).toBe("component");
     expect(entry?.signature).toBe("component my_comp");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveCompletionItems
+// ---------------------------------------------------------------------------
+
+describe("resolveCompletionItems", () => {
+  test("suggests visible variables, parameters, outer signals, and functions", () => {
+    const uri = "file:///top.vhd";
+    const text = `
+entity top is
+  port (
+    clk : in std_logic;
+    rst : in std_logic
+  );
+end entity top;
+
+architecture rtl of top is
+  signal outer_sig : std_logic;
+
+  function calc(sample_in : integer) return integer is
+    variable temp_value : integer;
+  begin
+    -- cursor
+    return temp_value;
+  end function calc;
+begin
+end architecture rtl;
+`;
+
+    const index = makeHoverIndex([{ uri, text }]);
+    const offset = text.indexOf("-- cursor");
+    const items = resolveCompletionItems(text, offset, uri, index);
+    const labels = items.map((item) => item.label);
+
+    expect(labels).toContain("sample_in");
+    expect(labels).toContain("temp_value");
+    expect(labels).toContain("outer_sig");
+    expect(labels).toContain("clk");
+    expect(labels).toContain("calc");
+  });
+
+  test("does not leak process-local variables from sibling processes", () => {
+    const uri = "file:///top.vhd";
+    const text = `
+architecture rtl of top is
+  signal shared_sig : std_logic;
+begin
+  p1 : process
+    variable only_p1 : integer;
+  begin
+    null;
+  end process;
+
+  p2 : process
+    variable only_p2 : integer;
+  begin
+    only
+    null;
+  end process;
+end architecture rtl;
+`;
+
+    const index = makeHoverIndex([{ uri, text }]);
+  const offset = text.lastIndexOf("only") + "only".length;
+    const items = resolveCompletionItems(text, offset, uri, index);
+    const labels = items.map((item) => item.label);
+
+    expect(labels).toContain("only_p2");
+    expect(labels).not.toContain("only_p1");
+  });
+
+  test("suggests target ports on the formal side of a port map", () => {
+    const uri = "file:///top.vhd";
+    const text = `
+architecture rtl of top is
+  component my_comp is
+    port (
+      clk : in std_logic;
+      rst : in std_logic
+    );
+  end component my_comp;
+begin
+  u1 : my_comp port map (
+    cl
+  );
+end architecture rtl;
+`;
+
+    const index = makeHoverIndex([{ uri, text }]);
+  const offset = text.lastIndexOf("cl") + "cl".length;
+    const items = resolveCompletionItems(text, offset, uri, index);
+    const labels = items.map((item) => item.label);
+
+    expect(labels).toContain("clk");
+    expect(labels).not.toContain("architecture");
+  });
+
+  test("suggests design units for instantiation targets", () => {
+    const uri = "file:///top.vhd";
+    const depUri = "file:///dep.vhd";
+    const text = `
+architecture rtl of top is
+begin
+  u1 : co
+end architecture rtl;
+`;
+    const depText = `
+component counter is
+end component counter;
+
+entity counter_ent is
+end entity counter_ent;
+`;
+
+    const index = makeHoverIndex([
+      { uri, text },
+      { uri: depUri, text: depText },
+    ]);
+    const offset = text.lastIndexOf("co") + "co".length;
+    const items = resolveCompletionItems(text, offset, uri, index);
+    const labels = items.map((item) => item.label);
+
+    expect(labels).toContain("counter");
+    expect(labels).toContain("counter_ent");
   });
 });
 
