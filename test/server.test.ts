@@ -873,6 +873,25 @@ end architecture rtl;
     );
     expect(oItems.map((item) => item.label)).toContain('o""');
   });
+
+  test("preserves typed keyword case on exact keyword completion", () => {
+    const uri = "file:///top.vhd";
+    const text = `
+architecture rtl of top is
+begin
+  SUBTYPE
+end architecture rtl;
+`;
+
+    const index = makeHoverIndex([{ uri, text }]);
+    const offset = text.lastIndexOf("SUBTYPE") + "SUBTYPE".length;
+    const items = resolveCompletionItems(text, offset, uri, index);
+    const subtypeKeyword = items.find((item) => item.label === "subtype");
+
+    expect(subtypeKeyword).toBeTruthy();
+    expect(subtypeKeyword?.insertText).toBe("SUBTYPE");
+    expect(subtypeKeyword?.insertTextFormat).toBe(1);
+  });
 });
 
 // ---------------------------------------------------------------------------

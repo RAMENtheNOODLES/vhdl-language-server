@@ -85,7 +85,7 @@ let debouncedDiagnostics: ((uri: string, fsPath: string) => void) | null = null;
 
 // Keep quote characters out of completion commit chars so typing based literals
 // like x"..." does not accidentally commit a completion item.
-const COMPLETION_COMMIT_CHARACTERS = [" ", "\t", "\n", "(", ",", ";", ":", "."];
+const COMPLETION_COMMIT_CHARACTERS = ["\t", "\n", "(", ",", ";", ":", "."];
 
 function buildDebouncedDiagnostics(): void {
   debouncedDiagnostics = debounce((uri: string, fsPath: string) => {

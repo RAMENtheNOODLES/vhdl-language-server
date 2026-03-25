@@ -1195,11 +1195,25 @@ export function resolveCompletionItems(
         return selectedNameItems;
     }
 
-    return resolveGeneralCompletions(
+    const items = resolveGeneralCompletions(
         text,
         currentUri,
         offset,
         index,
         prefix.prefixLower
     );
+
+    if (prefix.prefix.length > 0) {
+        for (const item of items) {
+            if (
+                item.kind === CompletionItemKind.Keyword
+                && item.label.toLowerCase() === prefix.prefixLower
+            ) {
+                item.insertText = prefix.prefix;
+                item.insertTextFormat = 1;
+            }
+        }
+    }
+
+    return items;
 }
