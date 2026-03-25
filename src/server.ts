@@ -28,6 +28,9 @@ import {
   DiagnosticSeverity,
   DidChangeConfigurationNotification,
   TextDocumentChangeEvent,
+  SemanticTokens,
+  SemanticTokensParams,
+  InsertTextFormat,
 } from "vscode-languageserver/node";
 import { TextDocument } from "vscode-languageserver-textdocument";
 import { URI } from "vscode-uri";
@@ -48,6 +51,10 @@ import {
 } from "./workspaceIndexer";
 import { resolveCompletionItems } from "./completionResolver";
 import { getSemanticEntryRange, getSemanticEntryUri, resolveSemanticEntry } from "./semanticResolver";
+import {
+  buildDocumentSemanticTokens,
+  VHDL_SEMANTIC_TOKENS_LEGEND,
+} from "./semanticTokens";
 import type { DesignUnitEntry } from "./indexing/indexTextSignature";
 
 // ---------------------------------------------------------------------------
@@ -75,6 +82,10 @@ let indexer: WorkspaceIndexer = new WorkspaceIndexer(connection, documents, vhdl
 
 // Debounced diagnostic publisher (rebuilt when config changes)
 let debouncedDiagnostics: ((uri: string, fsPath: string) => void) | null = null;
+
+// Keep quote characters out of completion commit chars so typing based literals
+// like x"..." does not accidentally commit a completion item.
+const COMPLETION_COMMIT_CHARACTERS = [" ", "\t", "\n", "(", ",", ";", ":", "."];
 
 function buildDebouncedDiagnostics(): void {
   debouncedDiagnostics = debounce((uri: string, fsPath: string) => {
@@ -236,6 +247,10 @@ connection.onInitialize((_params: InitializeParams): InitializeResult => {
     capabilities: {
       textDocumentSync: TextDocumentSyncKind.Incremental,
       hoverProvider: true,
+      semanticTokensProvider: {
+        legend: VHDL_SEMANTIC_TOKENS_LEGEND,
+        full: true,
+      },
       completionProvider: {
         resolveProvider: false,
         triggerCharacters: ["(", ",", ":", "."],
@@ -398,21 +413,28 @@ function getWordRangeAtOffset(
   text: string,
   offset: number
 ): { start: number; end: number } | null {
-  if (offset < 0 || offset >= text.length) {
+  if (offset < 0 || text.length === 0) {
     return null;
   }
 
   const wordChars = /\w/;
-  if (!wordChars.test(text[offset])) {
-    return null;
+  let cursor = Math.min(offset, text.length - 1);
+
+  // Hover/definition requests often land just after a token.
+  if (!wordChars.test(text[cursor])) {
+    if (cursor > 0 && wordChars.test(text[cursor - 1])) {
+      cursor--;
+    } else {
+      return null;
+    }
   }
 
-  let start = offset;
+  let start = cursor;
   while (start > 0 && wordChars.test(text[start - 1])) {
     start--;
   }
 
-  let end = offset;
+  let end = cursor + 1;
   while (end < text.length && wordChars.test(text[end])) {
     end++;
   }
@@ -439,9 +461,27 @@ connection.onCompletion(
       kind: item.kind,
       detail: item.detail,
       sortText: item.sortText,
+      insertText: item.insertText,
+      insertTextFormat: item.insertTextFormat === 2
+        ? InsertTextFormat.Snippet
+        : InsertTextFormat.PlainText,
+      commitCharacters: COMPLETION_COMMIT_CHARACTERS,
     }));
   }
 );
+
+// ---------------------------------------------------------------------------
+// Semantic tokens provider
+// ---------------------------------------------------------------------------
+
+connection.languages.semanticTokens.on((params: SemanticTokensParams): SemanticTokens => {
+  const document = documents.get(params.textDocument.uri);
+  if (!document) {
+    return { data: [] };
+  }
+
+  return buildDocumentSemanticTokens(document, indexer);
+});
 
 // ---------------------------------------------------------------------------
 // Document symbol provider (stub)

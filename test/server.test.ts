@@ -587,6 +587,24 @@ end entity my_comp;
     expect(entry?.kind).toBe("component");
     expect(entry?.signature).toBe("component my_comp");
   });
+
+  test("resolves a locally declared subtype when used in a signal declaration", () => {
+    const uri = "file:///top.vhd";
+    const text = `
+architecture rtl of top is
+  subtype address_t is std_logic_vector(15 downto 0);
+  signal t : address_t;
+begin
+end architecture rtl;
+`;
+
+    const index = makeHoverIndex([{ uri, text }]);
+    const [start, end] = wordRange(text, "address_t", "last");
+    const entry = resolveHoverEntry(text, start, end, uri, index);
+
+    expect(entry?.kind).toBe("subtype");
+    expect(entry?.signature).toBe("subtype address_t : std_logic_vector(15 downto 0)");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -594,7 +612,7 @@ end entity my_comp;
 // ---------------------------------------------------------------------------
 
 describe("resolveCompletionItems", () => {
-  test("suggests visible variables, parameters, outer signals, and functions", () => {
+  test("suggests visible variables, parameters, local types/subtypes, outer signals, and functions", () => {
     const uri = "file:///top.vhd";
     const text = `
 entity top is
@@ -606,6 +624,8 @@ end entity top;
 
 architecture rtl of top is
   signal outer_sig : std_logic;
+  type state_t is (idle, busy);
+  subtype small_int_t is integer range 0 to 7;
 
   function calc(sample_in : integer) return integer is
     variable temp_value : integer;
@@ -625,8 +645,51 @@ end architecture rtl;
     expect(labels).toContain("sample_in");
     expect(labels).toContain("temp_value");
     expect(labels).toContain("outer_sig");
+    expect(labels).toContain("state_t");
+    expect(labels).toContain("small_int_t");
     expect(labels).toContain("clk");
     expect(labels).toContain("calc");
+  });
+
+  test("suggests predefined VHDL functions, types, and subtypes", () => {
+    const uri = "file:///top.vhd";
+    const text = `
+entity top is
+end entity top;
+
+architecture rtl of top is
+begin
+  ab
+  int
+  nat
+end architecture rtl;
+`;
+
+    const index = makeHoverIndex([{ uri, text }]);
+
+    const absItems = resolveCompletionItems(
+      text,
+      text.lastIndexOf("ab") + "ab".length,
+      uri,
+      index
+    );
+    expect(absItems.map((item) => item.label)).toContain("abs");
+
+    const intItems = resolveCompletionItems(
+      text,
+      text.lastIndexOf("int") + "int".length,
+      uri,
+      index
+    );
+    expect(intItems.map((item) => item.label)).toContain("integer");
+
+    const natItems = resolveCompletionItems(
+      text,
+      text.lastIndexOf("nat") + "nat".length,
+      uri,
+      index
+    );
+    expect(natItems.map((item) => item.label)).toContain("natural");
   });
 
   test("does not leak process-local variables from sibling processes", () => {
@@ -712,6 +775,103 @@ end entity counter_ent;
 
     expect(labels).toContain("counter");
     expect(labels).toContain("counter_ent");
+  });
+
+  test("suggests enum literals in a case-when branch for the case selector type", () => {
+    const uri = "file:///top.vhd";
+    const text = `
+architecture rtl of top is
+  type CU_States_t is (FETCH, DECODE, EXECUTE, INTERRUPT, ERR);
+  signal test_state : CU_States_t;
+begin
+  p_main : process(all)
+  begin
+    case test_state is
+      when 
+        null;
+      when others =>
+        null;
+    end case;
+  end process;
+end architecture rtl;
+`;
+
+    const index = makeHoverIndex([{ uri, text }]);
+    const offset = text.lastIndexOf("when ") + "when ".length;
+    const items = resolveCompletionItems(text, offset, uri, index);
+    const labels = items.map((item) => item.label);
+
+    expect(labels).toEqual(expect.arrayContaining([
+      "FETCH",
+      "DECODE",
+      "EXECUTE",
+      "INTERRUPT",
+      "ERR",
+    ]));
+  });
+
+  test("suggests enum literals on assignment to a typed signal", () => {
+    const uri = "file:///top.vhd";
+    const text = `
+architecture rtl of top is
+  type cu_states_t is (FETCH, DECODE, EXECUTE, INTERRUPT, ERR);
+  signal test_state : cu_states_t;
+begin
+  p_main : process(all)
+  begin
+    test_state <= EX
+  end process;
+end architecture rtl;
+`;
+
+    const index = makeHoverIndex([{ uri, text }]);
+    const offset = text.lastIndexOf("EX") + "EX".length;
+    const items = resolveCompletionItems(text, offset, uri, index);
+    const labels = items.map((item) => item.label);
+
+    expect(labels).toContain("EXECUTE");
+    expect(labels).not.toContain("FETCH");
+  });
+
+  test("suggests based-literal snippets when typing x/b/o prefix", () => {
+    const uri = "file:///top.vhd";
+    const text = `
+architecture rtl of top is
+begin
+  x
+  b
+  o
+end architecture rtl;
+`;
+
+    const index = makeHoverIndex([{ uri, text }]);
+
+    const xItems = resolveCompletionItems(
+      text,
+      text.lastIndexOf("x") + "x".length,
+      uri,
+      index
+    );
+    const xSnippet = xItems.find((item) => item.label === 'x""');
+    expect(xSnippet).toBeTruthy();
+    expect(xSnippet?.insertText).toBe('x"$1"');
+    expect(xSnippet?.insertTextFormat).toBe(2);
+
+    const bItems = resolveCompletionItems(
+      text,
+      text.lastIndexOf("b") + "b".length,
+      uri,
+      index
+    );
+    expect(bItems.map((item) => item.label)).toContain('b""');
+
+    const oItems = resolveCompletionItems(
+      text,
+      text.lastIndexOf("o") + "o".length,
+      uri,
+      index
+    );
+    expect(oItems.map((item) => item.label)).toContain('o""');
   });
 });
 

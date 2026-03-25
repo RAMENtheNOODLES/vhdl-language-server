@@ -35,6 +35,7 @@ export interface SemanticSymbolIndex {
 }
 
 export type SemanticEntry =
+    | CallableEntry
     | CallableParameterEntry
     | DesignUnitEntry
     | LocalDecl
@@ -806,6 +807,87 @@ function resolveSelectedNameEntry(
     return unresolved();
 }
 
+function skipWhitespaceForward(text: string, offset: number): number {
+    let cursor = offset;
+    while (cursor < text.length && /\s/.test(text[cursor])) {
+        cursor++;
+    }
+    return cursor;
+}
+
+function isPotentialCallSite(text: string, wordEnd: number): boolean {
+    const next = skipWhitespaceForward(text, wordEnd);
+    return next < text.length && text[next] === "(";
+}
+
+function resolveDocCallableByName(
+    callables: CallableEntry[],
+    wordLower: string,
+    offset: number,
+    preferFunctions: boolean
+): CallableEntry | null {
+    const byName = callables.filter((entry) => entry.nameLower === wordLower);
+    if (byName.length === 0) {
+        return null;
+    }
+
+    const preferred = preferFunctions
+        ? byName.filter((entry) => entry.kind === "function")
+        : byName;
+    const candidates = preferred.length > 0 ? preferred : byName;
+
+    const inScope = candidates.filter(
+        (entry) => entry.blockStartOffset <= offset && offset <= entry.blockEndOffset
+    );
+    if (inScope.length > 0) {
+        return inScope.reduce((best, entry) =>
+            entry.blockStartOffset >= best.blockStartOffset ? entry : best
+        );
+    }
+
+    const above = candidates.filter((entry) => entry.nameEndOffset <= offset);
+    if (above.length > 0) {
+        return above.reduce((best, entry) =>
+            entry.nameStartOffset >= best.nameStartOffset ? entry : best
+        );
+    }
+
+    return candidates[0];
+}
+
+function resolveCallableReference(
+    text: string,
+    wordStart: number,
+    wordEnd: number,
+    wordLower: string,
+    currentUri: string,
+    index: SemanticSymbolIndex,
+    docState: DocState
+): CallableEntry | null {
+    const preferFunctions = isPotentialCallSite(text, wordEnd);
+    const docHit = resolveDocCallableByName(
+        docState.callables,
+        wordLower,
+        wordStart,
+        preferFunctions
+    );
+    if (docHit) {
+        return docHit;
+    }
+
+    const byName = index.getAllCallables().filter((entry) => entry.nameLower === wordLower);
+    if (byName.length === 0) {
+        return null;
+    }
+
+    const preferred = preferFunctions
+        ? byName.filter((entry) => entry.kind === "function")
+        : byName;
+    const candidates = preferred.length > 0 ? preferred : byName;
+
+    return pickBest(candidates, currentUri, wordStart)[0] ?? null;
+}
+
 function resolveSimpleName(
     text: string,
     wordStart: number,
@@ -868,6 +950,19 @@ function resolveSimpleName(
     const imported = resolveImportedSimpleName(wordLower, currentUri, wordStart, index);
     if (imported.entry || imported.ambiguous) {
         return imported;
+    }
+
+    const callable = resolveCallableReference(
+        text,
+        wordStart,
+        wordEnd,
+        wordLower,
+        currentUri,
+        index,
+        docState
+    );
+    if (callable) {
+        return resolved(callable);
     }
 
     const pkg = resolvePackageReference(wordLower, currentUri, wordStart, index);
