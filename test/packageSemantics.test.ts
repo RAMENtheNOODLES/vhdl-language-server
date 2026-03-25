@@ -260,6 +260,11 @@ end architecture rtl;
     const typeDefinition = resolveDefinition(consumerText, consumerUri, index, "word_t", "last");
     expect(typeDefinition.targetUri).toBe(pkgUri);
     expect(typeDefinition.signature).toBe("subtype word_t is integer range 0 to 15");
+
+    const incHover = resolveHoverEntry(consumerText, consumerText.lastIndexOf("inc"), consumerText.lastIndexOf("inc") + "inc".length, consumerUri, index);
+    expect(incHover?.kind).toBe("function");
+    expect(incHover?.signature).toBeTruthy();
+    expect(incHover?.signature).toContain("inc");
   });
 
   test("explicit member imports expose only the imported symbol", () => {

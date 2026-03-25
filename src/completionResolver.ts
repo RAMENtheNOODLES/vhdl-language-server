@@ -19,6 +19,52 @@ import { pickBest } from "./workspaceIndexer";
 
 const CONTEXT_LOOKBACK_CHARS = 2000;
 
+const VHDL_PREDEFINED_FUNCTIONS = [
+    "abs",
+    "maximum",
+    "minimum",
+    "to_string",
+    "to_hstring",
+    "to_ostring",
+    "to_bstring",
+    "to_integer",
+    "to_unsigned",
+    "to_signed",
+    "resize",
+    "shift_left",
+    "shift_right",
+    "rotate_left",
+    "rotate_right",
+    "rising_edge",
+    "falling_edge",
+];
+
+const VHDL_PREDEFINED_TYPES = [
+    "bit",
+    "boolean",
+    "character",
+    "integer",
+    "real",
+    "time",
+    "severity_level",
+    "file_open_kind",
+    "file_open_status",
+    "std_logic",
+    "std_ulogic",
+    "std_logic_vector",
+    "signed",
+    "unsigned",
+    "string",
+    "line",
+    "text",
+];
+
+const VHDL_PREDEFINED_SUBTYPES = [
+    "natural",
+    "positive",
+    "std_ulogic_vector",
+];
+
 type ScopeKind =
     | "architecture"
     | "component"
@@ -50,6 +96,12 @@ interface AssociationContext {
     unitNameLower: string | null;
 }
 
+interface EnumSymbolTables {
+    enumLiteralsByTypeLower: Map<string, string[]>;
+    objectTypeRefs: Array<{ nameLower: string; typeRefLower: string; declOffset: number }>;
+    subtypeBaseByNameLower: Map<string, string>;
+}
+
 export type CompletionSymbolIndex = SemanticSymbolIndex;
 
 export interface ResolvedCompletion {
@@ -57,6 +109,8 @@ export interface ResolvedCompletion {
     detail?: string;
     kind: CompletionItemKind;
     sortText: string;
+    insertText?: string;
+    insertTextFormat?: 1 | 2;
 }
 
 function escapeRegExp(value: string): string {
@@ -368,7 +422,9 @@ function addCompletion(
     kind: CompletionItemKind,
     sortGroup: string,
     prefixLower: string,
-    detail?: string
+    detail?: string,
+    insertText?: string,
+    insertTextFormat?: 1 | 2
 ): void {
     const labelLower = label.toLowerCase();
     if (!matchesPrefix(labelLower, prefixLower)) {
@@ -386,7 +442,48 @@ function addCompletion(
         detail,
         kind,
         sortText: `${sortGroup}_${labelLower}`,
+        insertText,
+        insertTextFormat,
     });
+}
+
+function addBasedLiteralSnippets(
+    results: ResolvedCompletion[],
+    seen: Set<string>,
+    prefixLower: string
+): void {
+    const snippets = [
+        {
+            label: 'x""',
+            detail: "hex based literal",
+            insertText: 'x"$1"',
+        },
+        {
+            label: 'b""',
+            detail: "binary based literal",
+            insertText: 'b"$1"',
+        },
+        {
+            label: 'o""',
+            detail: "octal based literal",
+            insertText: 'o"$1"',
+        },
+    ];
+
+    for (const snippet of snippets) {
+        addCompletion(
+            results,
+            seen,
+            "value",
+            snippet.label,
+            CompletionItemKind.Snippet,
+            "00",
+            prefixLower,
+            snippet.detail,
+            snippet.insertText,
+            2
+        );
+    }
 }
 
 function addPortLikeEntries(
@@ -428,6 +525,18 @@ function addCallableEntries(
             prefixLower,
             entry.signature
         );
+    }
+}
+
+function localDeclCompletionKind(kind: "signal" | "variable" | "constant" | "type" | "subtype"): CompletionItemKind {
+    switch (kind) {
+        case "constant":
+            return CompletionItemKind.Constant;
+        case "type":
+        case "subtype":
+            return CompletionItemKind.Struct;
+        default:
+            return CompletionItemKind.Variable;
     }
 }
 
@@ -540,6 +649,262 @@ function addKeywords(
             CompletionItemKind.Keyword,
             "90",
             prefixLower
+        );
+    }
+}
+
+function addPredefinedVhdlSymbols(
+    results: ResolvedCompletion[],
+    seen: Set<string>,
+    prefixLower: string
+): void {
+    for (const fn of VHDL_PREDEFINED_FUNCTIONS) {
+        addCompletion(
+            results,
+            seen,
+            "callable",
+            fn,
+            CompletionItemKind.Function,
+            "08",
+            prefixLower,
+            "predefined VHDL function"
+        );
+    }
+
+    for (const typeName of VHDL_PREDEFINED_TYPES) {
+        addCompletion(
+            results,
+            seen,
+            "value",
+            typeName,
+            CompletionItemKind.Struct,
+            "08",
+            prefixLower,
+            "predefined VHDL type"
+        );
+    }
+
+    for (const subtypeName of VHDL_PREDEFINED_SUBTYPES) {
+        addCompletion(
+            results,
+            seen,
+            "value",
+            subtypeName,
+            CompletionItemKind.Struct,
+            "08",
+            prefixLower,
+            "predefined VHDL subtype"
+        );
+    }
+}
+
+function parseEnumTypeLiterals(text: string): Map<string, string[]> {
+    const result = new Map<string, string[]>();
+    const enumTypeRe = /\btype\s+(\w+)\s+is\s*\(([^)]*)\)\s*;/gim;
+
+    let match: RegExpExecArray | null;
+    while ((match = enumTypeRe.exec(text)) !== null) {
+        const typeNameLower = match[1].toLowerCase();
+        const literals = match[2]
+            .split(",")
+            .map((literal) => literal.trim())
+            .filter((literal) => /^[a-zA-Z_]\w*$/.test(literal));
+        if (literals.length === 0) {
+            continue;
+        }
+
+        result.set(typeNameLower, literals);
+    }
+
+    return result;
+}
+
+function parseSubtypeAliases(text: string): Map<string, string> {
+    const result = new Map<string, string>();
+    const subtypeRe = /\bsubtype\s+(\w+)\s+is\s+([\w.]+)/gim;
+
+    let match: RegExpExecArray | null;
+    while ((match = subtypeRe.exec(text)) !== null) {
+        result.set(match[1].toLowerCase(), match[2].toLowerCase());
+    }
+
+    return result;
+}
+
+function parseTypedObjectDecls(
+    text: string
+): Array<{ nameLower: string; typeRefLower: string; declOffset: number }> {
+    const objectDecls: Array<{ nameLower: string; typeRefLower: string; declOffset: number }> = [];
+    const objectDeclRe = /\b(signal|variable|constant)\s+([\s\S]*?)\s*:\s*([\w.]+)(?:\s*\([^;]*\))?[\s\S]*?;/gim;
+
+    let match: RegExpExecArray | null;
+    while ((match = objectDeclRe.exec(text)) !== null) {
+        const namesPart = match[2];
+        const namesPartLower = namesPart.toLowerCase();
+        const typeRefLower = match[3].toLowerCase();
+        const rawNames = namesPart
+            .split(",")
+            .map((name) => name.trim())
+            .filter(Boolean);
+
+        const full = match[0];
+        const namesPartStart = full.toLowerCase().indexOf(namesPartLower);
+        if (namesPartStart < 0) {
+            continue;
+        }
+
+        const namesAbsStart = match.index + namesPartStart;
+        let searchFrom = 0;
+
+        for (const name of rawNames) {
+            if (!/^[a-zA-Z_]\w*$/.test(name)) {
+                continue;
+            }
+
+            const rel = namesPartLower.indexOf(name.toLowerCase(), searchFrom);
+            if (rel < 0) {
+                continue;
+            }
+
+            objectDecls.push({
+                nameLower: name.toLowerCase(),
+                typeRefLower,
+                declOffset: namesAbsStart + rel,
+            });
+
+            searchFrom = rel + name.length;
+        }
+    }
+
+    return objectDecls;
+}
+
+function buildEnumSymbolTables(text: string): EnumSymbolTables {
+    return {
+        enumLiteralsByTypeLower: parseEnumTypeLiterals(text),
+        objectTypeRefs: parseTypedObjectDecls(text),
+        subtypeBaseByNameLower: parseSubtypeAliases(text),
+    };
+}
+
+function resolveBaseTypeLower(
+    typeRefLower: string,
+    subtypeBaseByNameLower: Map<string, string>
+): string {
+    let current = typeRefLower;
+    const visited = new Set<string>();
+
+    while (!visited.has(current)) {
+        visited.add(current);
+        const base = subtypeBaseByNameLower.get(current);
+        if (!base) {
+            return current;
+        }
+        current = base;
+    }
+
+    return current;
+}
+
+function findObjectTypeAtOffset(
+    objectNameLower: string,
+    offset: number,
+    tables: EnumSymbolTables
+): string | null {
+    const matches = tables.objectTypeRefs
+        .filter((entry) => entry.nameLower === objectNameLower && entry.declOffset <= offset)
+        .sort((a, b) => b.declOffset - a.declOffset);
+    if (matches.length === 0) {
+        return null;
+    }
+
+    return resolveBaseTypeLower(matches[0].typeRefLower, tables.subtypeBaseByNameLower);
+}
+
+function getInnermostOpenCaseSelector(beforeCursorText: string): string | null {
+    const tokenRe = /\bend\s+case\b|\bcase\s+([\w.]+)\s+is\b/gim;
+    const caseSelectors: string[] = [];
+    let match: RegExpExecArray | null;
+
+    while ((match = tokenRe.exec(beforeCursorText)) !== null) {
+        if (/^end\s+case$/i.test(match[0])) {
+            if (caseSelectors.length > 0) {
+                caseSelectors.pop();
+            }
+            continue;
+        }
+
+        if (match[1]) {
+            caseSelectors.push(match[1]);
+        }
+    }
+
+    return caseSelectors.length > 0 ? caseSelectors[caseSelectors.length - 1] : null;
+}
+
+function getTypedEnumCompletionType(
+    text: string,
+    offset: number,
+    tables: EnumSymbolTables
+): string | null {
+    const before = text.slice(0, offset);
+    const stmtFragment = getStatementFragmentBefore(text, offset);
+
+    if (/^\s*when\s+\w*$/i.test(stmtFragment)) {
+        const selector = getInnermostOpenCaseSelector(before);
+        if (!selector) {
+            return null;
+        }
+
+        const selectorLeaf = selector.split(".").pop()?.toLowerCase();
+        if (!selectorLeaf) {
+            return null;
+        }
+
+        return findObjectTypeAtOffset(selectorLeaf, offset, tables);
+    }
+
+    const assignMatch = /^\s*(\w+)\s*(?:<=|:=)\s*\w*$/i.exec(stmtFragment);
+    if (assignMatch) {
+        return findObjectTypeAtOffset(assignMatch[1].toLowerCase(), offset, tables);
+    }
+
+    const compareMatch = /^\s*(?:if|elsif|when)?\s*(\w+)\s*(?:=|\/=)\s*\w*$/i.exec(stmtFragment);
+    if (compareMatch) {
+        return findObjectTypeAtOffset(compareMatch[1].toLowerCase(), offset, tables);
+    }
+
+    return null;
+}
+
+function addEnumLiteralCompletions(
+    text: string,
+    offset: number,
+    results: ResolvedCompletion[],
+    seen: Set<string>,
+    prefixLower: string
+): void {
+    const tables = buildEnumSymbolTables(text);
+    const targetTypeLower = getTypedEnumCompletionType(text, offset, tables);
+    if (!targetTypeLower) {
+        return;
+    }
+
+    const literals = tables.enumLiteralsByTypeLower.get(targetTypeLower);
+    if (!literals || literals.length === 0) {
+        return;
+    }
+
+    for (const literal of literals) {
+        addCompletion(
+            results,
+            seen,
+            "value",
+            literal,
+            CompletionItemKind.EnumMember,
+            "00",
+            prefixLower,
+            `enum literal of ${targetTypeLower}`
         );
     }
 }
@@ -673,6 +1038,9 @@ function resolveGeneralCompletions(
 ): ResolvedCompletion[] {
     const results: ResolvedCompletion[] = [];
     const seen = new Set<string>();
+    addEnumLiteralCompletions(text, offset, results, seen, prefixLower);
+    addBasedLiteralSnippets(results, seen, prefixLower);
+
     const scopes = collectScopes(text, currentUri, index);
     const currentScopeChain = getContainingScopes(scopes, offset);
     const visibleLocals = sortByScopeAndOffset(
@@ -711,7 +1079,7 @@ function resolveGeneralCompletions(
             seen,
             "value",
             entry.name,
-            entry.kind === "constant" ? CompletionItemKind.Constant : CompletionItemKind.Variable,
+            localDeclCompletionKind(entry.kind),
             "01",
             prefixLower,
             entry.signature
@@ -772,6 +1140,8 @@ function resolveGeneralCompletions(
             prefixLower,
             "07"
         );
+
+        addPredefinedVhdlSymbols(results, seen, prefixLower);
 
         addKeywords(results, seen, prefixLower);
     }

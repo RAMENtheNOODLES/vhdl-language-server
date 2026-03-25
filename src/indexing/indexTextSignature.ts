@@ -42,7 +42,7 @@ export interface DesignUnitEntry {
 export interface LocalDecl {
     name: string;
     nameLower: string;
-    kind: "signal" | "variable" | "constant";
+    kind: "signal" | "variable" | "constant" | "type" | "subtype";
     startOffset: number;
     endOffset: number;
     range: Range;
@@ -533,7 +533,57 @@ function extractLocalDecls(doc: TextDocument, text: string): LocalDecl[] {
         }
     }
 
-    return locals;
+    const subtypeRe = /\bsubtype\s+(\w+)\s+is\s+([\s\S]*?);/gim;
+    while ((m = subtypeRe.exec(text)) !== null) {
+        const name = m[1];
+        const detail = normalizeWhitespace(m[2]);
+        const nameStartRel = m[0].toLowerCase().indexOf(name.toLowerCase());
+        if (nameStartRel < 0) {
+            continue;
+        }
+
+        const startOffset = m.index + nameStartRel;
+        const endOffset = startOffset + name.length;
+        locals.push({
+            name,
+            nameLower: name.toLowerCase(),
+            kind: "subtype",
+            startOffset,
+            endOffset,
+            range: rangeFromOffsets(doc, startOffset, endOffset),
+            signature: buildObjectSignature("subtype", name, detail),
+        });
+    }
+
+    const typeRe = /\btype\s+(\w+)\b/gim;
+    while ((m = typeRe.exec(text)) !== null) {
+        const absMatchStart = m.index;
+        const name = m[1];
+        const nameStartRel = m[0].toLowerCase().lastIndexOf(name.toLowerCase());
+        if (nameStartRel < 0) {
+            continue;
+        }
+
+        const declarationEnd = findTypeDeclarationEnd(text, absMatchStart, text.length);
+        const startOffset = absMatchStart + nameStartRel;
+        const endOffset = startOffset + name.length;
+        locals.push({
+            name,
+            nameLower: name.toLowerCase(),
+            kind: "type",
+            startOffset,
+            endOffset,
+            range: rangeFromOffsets(doc, startOffset, endOffset),
+            signature: normalizeWhitespace(text.slice(absMatchStart, Math.max(absMatchStart, declarationEnd - 1))),
+        });
+    }
+
+    return locals.sort((a, b) => {
+        if (a.startOffset !== b.startOffset) {
+            return a.startOffset - b.startOffset;
+        }
+        return a.nameLower.localeCompare(b.nameLower);
+    });
 }
 
 function extractCallables(doc: TextDocument, text: string): CallableEntry[] {
