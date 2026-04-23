@@ -3,6 +3,7 @@ import { TextDocument } from "vscode-languageserver-textdocument";
 import { buildDocumentSemanticTokens, VHDL_SEMANTIC_TOKENS_LEGEND } from "../src/semanticTokens";
 import { indexText, type CallableEntry, type DesignUnitEntry, type PackageEntry } from "../src/indexing/indexTextSignature";
 import type { SemanticSymbolIndex } from "../src/semanticResolver";
+import { resolveHoverEntry } from "../src/hoverResolver";
 
 function makeIndex(
   docs: Array<{ uri: string; text: string }>
@@ -154,5 +155,46 @@ end architecture rtl;
     const triples = decodeTokenTriples(text, tokens.data);
 
     expect(triples).toContainEqual({ lexeme: "inc", tokenType: "function" });
+  });
+
+  test("highlights and hovers multiline enum type references", () => {
+    const uri = "file:///multiline-enum.vhd";
+    const text = `
+entity top is
+end entity top;
+
+architecture rtl of top is
+  type Instruction_States_t is (NOP, LUI, AUIPC, JAL, JALR, BEQ, BNE,
+    BLT, BGE, BLTU, BGEU, LB, LH, LW,
+    LBU, LHU, SB, SH, SW, ADDI, SLTI, SLTIU,
+    XORI, ORI, ANDI, SLLI, SRLI, SRAI, ADD, SUB,
+    \SLL\, SLT, SLTU, \XOR\, \SRL\, \SRA\, \OR\,
+    \AND\, FENCE, PAUSE, ECALL, BREAK
+  );
+  signal instruction_state : Instruction_States_t;
+begin
+  instruction_state <= NOP;
+end architecture rtl;
+`;
+
+    const index = makeIndex([{ uri, text }]);
+    const document = TextDocument.create(uri, "vhdl", 0, text);
+    const tokens = buildDocumentSemanticTokens(document, index);
+    const triples = decodeTokenTriples(text, tokens.data);
+
+    expect(triples).toContainEqual({ lexeme: "Instruction_States_t", tokenType: "type" });
+    expect(triples).toContainEqual({ lexeme: "NOP", tokenType: "type" });
+
+    const useStart = text.lastIndexOf("Instruction_States_t");
+    const useEnd = useStart + "Instruction_States_t".length;
+    const hover = resolveHoverEntry(text, useStart, useEnd, uri, index);
+    expect(hover?.kind).toBe("type");
+    expect(hover?.signature).toContain("type Instruction_States_t is (");
+
+    const literalStart = text.lastIndexOf("NOP");
+    const literalEnd = literalStart + "NOP".length;
+    const literalHover = resolveHoverEntry(text, literalStart, literalEnd, uri, index);
+    expect(literalHover?.kind).toBe("type");
+    expect(literalHover?.signature).toContain("type Instruction_States_t is (");
   });
 });

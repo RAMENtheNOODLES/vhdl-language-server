@@ -25,6 +25,7 @@ import {
   resolveCompletionItems,
   type CompletionSymbolIndex,
 } from "../src/completionResolver";
+import { resolveSignatureHelp } from "../src/signatureResolver";
 import { determineContext, pickBest } from "../src/workspaceIndexer";
 import type {
   CallableEntry,
@@ -891,6 +892,93 @@ end architecture rtl;
     expect(subtypeKeyword).toBeTruthy();
     expect(subtypeKeyword?.insertText).toBe("SUBTYPE");
     expect(subtypeKeyword?.insertTextFormat).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveSignatureHelp
+// ---------------------------------------------------------------------------
+
+describe("resolveSignatureHelp", () => {
+  test("shows function parameters after typing an open parenthesis", () => {
+    const uri = "file:///top.vhd";
+    const text = `
+architecture rtl of top is
+  function get_current_instruction (
+    instruction : opcode_t;
+    sub_instruction : sub_instr_t := "000";
+    sub_sub_instruction : opcode_t := (others => '0')
+  ) return instruction_states_t is
+  begin
+    return idle;
+  end function get_current_instruction;
+begin
+  get_current_instruction(
+end architecture rtl;
+`;
+
+    const index = makeHoverIndex([{ uri, text }]);
+    const offset = text.lastIndexOf("get_current_instruction(") + "get_current_instruction(".length;
+    const help = resolveSignatureHelp(text, offset, uri, index);
+
+    expect(help).not.toBeNull();
+    expect(help?.signatures[0].label).toContain("function get_current_instruction");
+    expect(help?.signatures[0].parameters?.map((param) => String(param.label))).toEqual([
+      "instruction : opcode_t",
+      "sub_instruction : sub_instr_t := \"000\"",
+      "sub_sub_instruction : opcode_t := (others => '0')",
+    ]);
+    expect(help?.activeParameter).toBe(0);
+  });
+
+  test("advances active parameter after a top-level comma", () => {
+    const uri = "file:///top.vhd";
+    const text = `
+architecture rtl of top is
+  function get_current_instruction(
+    instruction : opcode_t;
+    sub_instruction : sub_instr_t := "000";
+    sub_sub_instruction : opcode_t := (others => '0')
+  ) return instruction_states_t is
+  begin
+    return idle;
+  end function get_current_instruction;
+begin
+  get_current_instruction(opcode_in, 
+end architecture rtl;
+`;
+
+    const index = makeHoverIndex([{ uri, text }]);
+    const offset = text.lastIndexOf("opcode_in, ") + "opcode_in, ".length;
+    const help = resolveSignatureHelp(text, offset, uri, index);
+
+    expect(help).not.toBeNull();
+    expect(help?.activeParameter).toBe(1);
+  });
+
+  test("uses named association to choose the active parameter", () => {
+    const uri = "file:///top.vhd";
+    const text = `
+architecture rtl of top is
+  function get_current_instruction(
+    instruction : opcode_t;
+    sub_instruction : sub_instr_t := "000";
+    sub_sub_instruction : opcode_t := (others => '0')
+  ) return instruction_states_t is
+  begin
+    return idle;
+  end function get_current_instruction;
+begin
+  get_current_instruction(sub_instruction =>
+end architecture rtl;
+`;
+
+    const index = makeHoverIndex([{ uri, text }]);
+    const offset = text.lastIndexOf("sub_instruction =>") + "sub_instruction =>".length;
+    const help = resolveSignatureHelp(text, offset, uri, index);
+
+    expect(help).not.toBeNull();
+    expect(help?.activeParameter).toBe(1);
   });
 });
 

@@ -547,4 +547,51 @@ end architecture rtl;
     );
     expect(selectedItems.map((item) => item.label)).toContain("ANSWER");
   });
+
+  test("resolves imported multiline enum type members", () => {
+    const pkgWithMultilineType = `
+package isa_pkg is
+  type Instruction_States_t is (NOP, LUI, AUIPC, JAL, JALR, BEQ, BNE,
+    BLT, BGE, BLTU, BGEU, LB, LH, LW,
+    LBU, LHU, SB, SH, SW, ADDI, SLTI, SLTIU,
+    XORI, ORI, ANDI, SLLI, SRLI, SRAI, ADD, SUB,
+    \\SLL\\, SLT, SLTU, \\XOR\\, \\SRL\\, \\SRA\\, \\OR\\,
+    \\AND\\, FENCE, PAUSE, ECALL, BREAK
+  );
+end package isa_pkg;
+`;
+
+    const consumerText = `
+library work;
+use work.isa_pkg.all;
+
+entity top is
+end entity top;
+
+architecture rtl of top is
+  signal instruction_state : Instruction_States_t;
+begin
+  instruction_state <= NOP;
+end architecture rtl;
+`;
+
+    const index = makeIndex([
+      { uri: "file:///isa-pkg.vhd", text: pkgWithMultilineType },
+      { uri: consumerUri, text: consumerText },
+    ]);
+
+    const [start, end] = wordRange(consumerText, "Instruction_States_t", "last");
+    const hover = resolveHoverEntry(consumerText, start, end, consumerUri, index);
+    expect(hover?.kind).toBe("type");
+    expect(hover?.signature).toContain("type Instruction_States_t is (");
+
+    const definition = resolveSemanticEntry(consumerText, start, end, consumerUri, index);
+    expect(definition.entry?.kind).toBe("type");
+    expect(getSemanticEntryUri(definition.entry!, consumerUri)).toBe("file:///isa-pkg.vhd");
+
+    const [literalStart, literalEnd] = wordRange(consumerText, "NOP", "last");
+    const literalHover = resolveHoverEntry(consumerText, literalStart, literalEnd, consumerUri, index);
+    expect(literalHover?.kind).toBe("type");
+    expect(literalHover?.signature).toContain("type Instruction_States_t is (");
+  });
 });

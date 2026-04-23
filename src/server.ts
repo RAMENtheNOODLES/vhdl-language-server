@@ -30,6 +30,7 @@ import {
   TextDocumentChangeEvent,
   SemanticTokens,
   SemanticTokensParams,
+  SignatureHelp,
   InsertTextFormat,
 } from "vscode-languageserver/node";
 import { TextDocument } from "vscode-languageserver-textdocument";
@@ -55,6 +56,7 @@ import {
   buildDocumentSemanticTokens,
   VHDL_SEMANTIC_TOKENS_LEGEND,
 } from "./semanticTokens";
+import { resolveSignatureHelp } from "./signatureResolver";
 import type { DesignUnitEntry } from "./indexing/indexTextSignature";
 
 // ---------------------------------------------------------------------------
@@ -254,6 +256,10 @@ connection.onInitialize((_params: InitializeParams): InitializeResult => {
       completionProvider: {
         resolveProvider: false,
         triggerCharacters: ["(", ",", ":", "."],
+      },
+      signatureHelpProvider: {
+        triggerCharacters: ["(", ","],
+        retriggerCharacters: [","],
       },
       documentSymbolProvider: true,
       definitionProvider: true,
@@ -469,6 +475,17 @@ connection.onCompletion(
     }));
   }
 );
+
+connection.onSignatureHelp((params): SignatureHelp | null => {
+  const document = documents.get(params.textDocument.uri);
+  if (!document) {
+    return null;
+  }
+
+  const text = document.getText();
+  const offset = document.offsetAt(params.position);
+  return resolveSignatureHelp(text, offset, params.textDocument.uri, indexer);
+});
 
 // ---------------------------------------------------------------------------
 // Semantic tokens provider
