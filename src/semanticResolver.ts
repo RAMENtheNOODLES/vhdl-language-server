@@ -855,6 +855,78 @@ function resolveDocCallableByName(
     return candidates[0];
 }
 
+function parseEnumLiteralsFromTypeSignature(signature: string): string[] {
+    const match = /\btype\s+\w+\s+is\s*\((.*)\)\s*$/i.exec(signature.trim());
+    if (!match) {
+        return [];
+    }
+
+    return match[1]
+        .split(",")
+        .map((literal) => literal.trim())
+        .filter((literal) => literal.length > 0)
+        .map((literal) => literal.toLowerCase());
+}
+
+function typeDeclContainsEnumLiteral(
+    entry: LocalDecl | PackageMemberEntry,
+    literalLower: string
+): boolean {
+    if (entry.kind !== "type") {
+        return false;
+    }
+
+    return parseEnumLiteralsFromTypeSignature(entry.signature).includes(literalLower);
+}
+
+function resolveEnumLiteralReference(
+    wordLower: string,
+    currentUri: string,
+    offset: number,
+    index: SemanticSymbolIndex,
+    docState: DocState
+): SemanticResolution {
+    const localTypeHits = docState.locals.filter(
+        (entry) => entry.startOffset <= offset && typeDeclContainsEnumLiteral(entry, wordLower)
+    );
+    if (localTypeHits.length === 1) {
+        return resolved(localTypeHits[0]);
+    }
+    if (localTypeHits.length > 1) {
+        return unresolved(true);
+    }
+
+    const importedTypes: PackageMemberEntry[] = [];
+    const activeUses = getActiveContext(docState, offset).uses;
+    for (const useClause of activeUses) {
+        const packages = resolveUseClauseTargetPackages(useClause, index);
+        if (packages.length === 0) {
+            continue;
+        }
+
+        for (const pkg of packages) {
+            importedTypes.push(
+                ...pkg.members.filter(
+                    (member) =>
+                        member.kind === "type" &&
+                        typeDeclContainsEnumLiteral(member, wordLower)
+                )
+            );
+        }
+    }
+
+    if (importedTypes.length === 0) {
+        return unresolved();
+    }
+
+    const grouped = groupPackageMembers(importedTypes);
+    if (grouped.length > 1 || grouped[0].ambiguous) {
+        return unresolved(true);
+    }
+
+    return resolved(grouped[0].members[0]);
+}
+
 function resolveCallableReference(
     text: string,
     wordStart: number,
@@ -950,6 +1022,17 @@ function resolveSimpleName(
     const imported = resolveImportedSimpleName(wordLower, currentUri, wordStart, index);
     if (imported.entry || imported.ambiguous) {
         return imported;
+    }
+
+    const enumLiteral = resolveEnumLiteralReference(
+        wordLower,
+        currentUri,
+        wordStart,
+        index,
+        docState
+    );
+    if (enumLiteral.entry || enumLiteral.ambiguous) {
+        return enumLiteral;
     }
 
     const callable = resolveCallableReference(
