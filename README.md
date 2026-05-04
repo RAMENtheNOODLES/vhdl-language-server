@@ -89,6 +89,8 @@ export function activate(context: vscode.ExtensionContext) {
 }
 ```
 
+To force a workspace-wide GHDL refresh from the extension, send the custom request `vhdl/refreshGhdlCache` to the server and await the result object. The server clears existing `work-obj*.cf` files, recompiles workspace VHDL files in dependency order, and then re-runs its workspace indexer.
+
 ## VS Code settings (`settings.json`)
 
 All settings live under the `vhdl` namespace:

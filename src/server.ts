@@ -32,6 +32,7 @@ import {
   SemanticTokensParams,
   SignatureHelp,
   InsertTextFormat,
+  RequestType,
 } from "vscode-languageserver/node";
 import { TextDocument } from "vscode-languageserver-textdocument";
 import { URI } from "vscode-uri";
@@ -45,6 +46,10 @@ import {
   inferDiagnosticCharacterRange,
   VHDL_KEYWORDS,
 } from "./ghdl";
+import {
+  refreshWorkspaceGhdlCache,
+  type GhdlRefreshResult,
+} from "./ghdlRefresh";
 import {
   WorkspaceIndexer,
   determineContext,
@@ -84,6 +89,10 @@ let indexer: WorkspaceIndexer = new WorkspaceIndexer(connection, documents, vhdl
 
 // Debounced diagnostic publisher (rebuilt when config changes)
 let debouncedDiagnostics: ((uri: string, fsPath: string) => void) | null = null;
+
+const RefreshGhdlCacheRequest = new RequestType<void, GhdlRefreshResult, void>(
+  "vhdl/refreshGhdlCache"
+);
 
 // Keep quote characters out of completion commit chars so typing based literals
 // like x"..." does not accidentally commit a completion item.
@@ -309,6 +318,31 @@ connection.onInitialized(async () => {
   }
 
   connection.console.log('onInitialized: done');
+});
+
+connection.onRequest(RefreshGhdlCacheRequest, async (): Promise<GhdlRefreshResult> => {
+  if (!initParams) {
+    return {
+      filesDiscovered: 0,
+      filesProcessed: 0,
+      filesSucceeded: 0,
+      cacheFilesCleared: 0,
+      issues: [{ filePath: "", message: "server not initialized" }],
+    };
+  }
+
+  if (indexer.getWorkspaceRoots().length === 0) {
+    indexer.setWorkspaceRoots(initParams);
+  }
+
+  indexer.resetCaches();
+
+  const workspaceRoots = indexer.getWorkspaceRoots();
+  const refreshResult = await refreshWorkspaceGhdlCache(workspaceRoots, vhdlConfig);
+
+  await indexer.triggerRescan();
+
+  return refreshResult;
 });
 
 connection.onDidChangeConfiguration(async () => {
