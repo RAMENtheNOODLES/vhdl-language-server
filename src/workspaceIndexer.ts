@@ -100,6 +100,20 @@ export class WorkspaceIndexer {
         this.refreshGhdlStandardLibraryInfo();
     }
 
+    setWorkspaceRoots(initParams: InitializeParams): void {
+        this.workspaceRoots = getWorkspaceRoots(initParams);
+    }
+
+    resetCaches(): void {
+        this.docIndex.clear();
+        this.entityIndex.clear();
+        this.componentIndex.clear();
+        this.callableIndex.clear();
+        this.packageIndex.clear();
+        this.packageBodyIndex.clear();
+        this.mtimeCache.clear();
+    }
+
     /**
      * Start the indexer: perform an initial scan and schedule periodic rescans.
      */
@@ -121,6 +135,10 @@ export class WorkspaceIndexer {
                 rescanIntervalMs
             );
         }
+    }
+
+    getWorkspaceRoots(): string[] {
+        return [...this.workspaceRoots];
     }
 
     /** Stop periodic rescans (call on server shutdown or config reload). */
